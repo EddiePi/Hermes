@@ -1235,6 +1235,225 @@ nextchunk-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
    & MALLOC_ALIGN_MASK)
 
 
+
+// Edit by Eddie
+/* include header related to shm */
+
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/types.h>
+
+#define SHM_KEY 0xaaaa;
+#define SHM_LENGTH 1024;
+#define POOL_LENGTH 16;
+#define POOL_THRESHOULD 0x20000
+
+#define MREMAP
+
+/* declare function related to smart paging */
+static void smart_paging_init();
+static void init_shm();
+static bool check_pri_process();
+static void put_pool_memory(mchunkptr chunk);
+static struct mchunkptr get_pool_memory(INTERNAL_SIZE_T size);
+
+bool should_lock_memory = 0;
+
+
+/* declare global variables related to smart paging */
+pid_t pid;
+bool smart_paging_initialized = -1;
+bool has_shm;
+bool is_pri_process;
+int* shm_array;
+
+struct malloc_chunk_wrap
+{
+  mchunkptr chunk_ptr;
+  struct malloc_chunk_wrap* prev;
+  struct malloc_chunk_wrap* next;
+};
+
+
+#define WRAP_SIZE sizeof(struct malloc_chunk_wrap)
+
+/* 
+  each pool contains a mmap memory chunk within specific range.
+  CURRENT: we use 16 pools. The i-th pool has a size of 2^(i + 7) kb.
+  The size is shown as follows:
+  0     1     2     3   4   5   6   7    8    9    10    11    12    13  14  15
+  128K  256K  512K  1M  2M  4M  8M  16M  32M  64M  128M  256M  512M  1G  2G  4G~
+
+  TODO: should we use exponential interval or linear interval?
+  */
+struct mmap_pool 
+{
+  struct malloc_chunk_wrap pool[POOL_LENGTH];
+};
+
+static struct mmap_pool m_pool;
+
+#define size2pool_index(s)  \
+({  \
+  int i = 0;  \
+  int sz = s >> 18; \
+  while (sz > 0) {  \
+    i++;  \
+    sz >>= 1; \
+  } \
+  if (i > 15) { \
+    i = 15; \
+  } \
+  i;  \
+})
+
+#define foreach_shm_arr(index)  \
+  for (index = 0; index < SHM_LENGTH; index++)
+
+/* implementation of declared functions */
+static
+void init_shm()
+{
+  int shmid = shmget(SHM_KEY, SHM_LENGTH * sizeof(int), 0644 | IPC_CREAT);
+
+  /* set this value as false since we update this value later */
+  is_pri_process = 0;
+  if (shmid < 0)
+  {
+    has_shm = 0;
+    perror("error in get shm");
+    return;
+  }
+  shm_array = (int *)shmat(shmid, NULL, 0);
+  has_shm = 1;
+  pid = getpid();
+}
+
+static
+bool check_pri_process()
+{
+  if (has_shm && !is_pri_process)
+  {
+    int i;
+    foreach_shm_arr(i)
+    {
+      if (shm_array[i] == pid)
+      {
+        is_pri_process = 1;
+        should_lock_memory = 1;
+        break;
+      }
+    }
+  }
+  return is_pri_process;
+}
+
+/* 
+ * init shm
+ * init related data structure
+ */
+static
+void smart_paging_init()
+{
+  if (smart_paging_initialized >= 0)
+  {
+    return;
+  }
+  smart_paging_initialized = 0;
+  init_shm();
+  for (int i = 0; i < POOL_LENGTH; i++)
+  {
+    m_pool[i].chunk_ptr = NULL;
+    m_pool[i].prev = &m_pool[i];
+    m_pool[i].next = &m_pool[i];
+  }
+  /* check priority process once on start */
+  check_pri_process();
+}
+
+/* 
+ * get memory from the pool
+ */
+static
+mchunkptr 
+get_pool_memory(INTERNAL_SIZE_T size)
+{
+  // we only use pool memory for large chunk
+  if (size < POOL_THRESHOULD)
+  {
+    return NULL;
+  }
+  int pool_index = size2pool_index(size);
+  // check whether we have chunk inside the current pool index
+  struct malloc_chunk_wrap* chunk_wrap_ptr;
+  struct malloc_chunk_warp* cur;
+  
+  while (pool_index < POOL_LENGTH)
+  {
+    /* iterate through all pooled memory */
+    chunk_wrap_head_ptr = &m_pool.pool[pool_index];
+    cur = chunk_wrap_head_ptr->next;
+    while (cur != chunk_wrap_head_ptr)
+    {
+      /* iterate through memory chunk in this pool */
+      if (cur->chunk_ptr->size >= size)
+      {
+        /* we have found a chunk, break */
+        break;
+      }
+    }
+    if (cur != chunk_wrap_head_ptr)
+    {
+      /* we have found a chunk: 
+       * 1. detach the wrap from the double linked list
+       * 2. break 
+       */
+      cur->prev->next = cur->next;
+      cur->next->prev = cur->prev;
+      cur->next = NULL;
+      cur->prev = NULL;
+      break;
+    }
+
+    /* we cannot find a chunk in this pool, increase the index */
+    pool_index++;
+  }
+  if (pool_index == POOL_LENGTH)
+  {
+    // there is no suitable chunk in pool, return NULL
+    return NULL;
+  }
+  /* remap the chunk */
+  mchunkptr res = cur->chunk_ptr;
+  //__mremap (void *__addr, size_t __old_len, size_t __new_len, int __flags, ...)
+  __mremap((void *) cur->chunk_ptr, cur->chunk_ptr->size, size, MREMAP_MAYMOVE);
+  __libc_free((void *) cur);
+
+  if (res != NULL)
+    printf("got memory from pool");
+
+  return res;
+}
+
+/* put memory to pool */
+static 
+void 
+put_pool_memory(mchunkptr chunk)
+{
+  printf("put memory to pool");
+  int index = size2pool_index(chunk->size);
+  chunk_wrap_ptr wrap = (struct chunk_wrap_ptr*) __libc_malloc(WRAP_SIZE);
+  chunk_wrap_head_ptr = &m_pool.pool[index];
+  wrap->chunk_ptr = chunk;
+  wrap->next = chunk_wrap_head_ptr->next;
+  wrap->prev = chunk_wrap_head_ptr;
+  wrap->next->prev = wrap;
+  wrap->prev->next = wrap;
+
+  return;
+}
+
+
 /*
    Check if a request is so large that it would wrap around zero when
    padded and aligned. To simplify some other code, the bound is made
@@ -2281,7 +2500,7 @@ sysmalloc (INTERNAL_SIZE_T nb, mstate av)
   INTERNAL_SIZE_T end_misalign;   /* partial page left at end of new space */
   char *aligned_brk;              /* aligned offset into brk */
 
-  mchunkptr p;                    /* the allocated/returned chunk */
+  mchunkptr ƒ;                    /* the allocated/returned chunk */
   mchunkptr remainder;            /* remainder from allocation */
   unsigned long remainder_size;   /* its size */
 
@@ -2321,7 +2540,25 @@ sysmalloc (INTERNAL_SIZE_T nb, mstate av)
       /* Don't try if size wraps around 0 */
       if ((unsigned long) (size) > (unsigned long) (nb))
         {
-          mm = (char *) (MMAP (0, size, PROT_READ | PROT_WRITE, 0));
+          /* before we do mmap, we check whether it is a priority process again */
+          int mlock_mask = 0;
+          if (check_pri_process())
+          {
+            mlock_mask = MAP_LOCKED;
+            printf("allocating locked memory. pid: %d\n", pid)
+          }
+
+          // Edit by Eddie
+          /*
+           * try to get memory from the pool first.
+           */
+          if (is_pri_process && MALLOC_ALIGNMENT == 2 * SIZE_SZ)
+          {
+            mm = (char *) get_pool_memory(size);
+          }
+
+          if (!is_pri_process || (is_pri_process && mm == NULL))
+            mm = (char *) (MMAP (0, size, PROT_READ | PROT_WRITE, mlock_mask));
 
           if (mm != MAP_FAILED)
             {
@@ -2366,9 +2603,6 @@ sysmalloc (INTERNAL_SIZE_T nb, mstate av)
               atomic_max (&mp_.max_mmapped_mem, sum);
 
               check_chunk (av, p);
-
-		// Edit by Eddie
-		printf("get mmapped memory\n");
 
               return chunk2mem (p);
             }
@@ -2851,6 +3085,12 @@ munmap_chunk (mchunkptr p)
   atomic_decrement (&mp_.n_mmaps);
   atomic_add (&mp_.mmapped_mem, -total_size);
 
+  if (check_pri_process())
+  {
+    /* we put the memory into pool if it is a prioritized process */
+    put_pool_memory(p);
+  }
+
   /* If munmap failed the process virtual memory address space is in a
      bad shape.  Just leave the block hanging around, the process will
      terminate shortly anyway since not much can be done.  */
@@ -2906,6 +3146,11 @@ __libc_malloc (size_t bytes)
 {
   mstate ar_ptr;
   void *victim;
+
+  // Edit by Eddie
+  /* maybe initialize smart paging */
+  if (smart_paging_initialized < 0)
+    smart_paging_init();
 
   void *(*hook) (size_t, const void *)
     = atomic_forced_read (__malloc_hook);
@@ -2980,6 +3225,11 @@ __libc_realloc (void *oldmem, size_t bytes)
   INTERNAL_SIZE_T nb;         /* padded request size */
 
   void *newp;             /* chunk to return */
+
+  // Edit by Eddie
+  /* maybe initialize smart paging */
+  if (smart_paging_initialized < 0)
+    smart_paging_init();
 
   void *(*hook) (void *, size_t, const void *) =
     atomic_forced_read (__realloc_hook);
@@ -3080,6 +3330,11 @@ _mid_memalign (size_t alignment, size_t bytes, void *address)
 {
   mstate ar_ptr;
   void *p;
+
+  // Edit by Eddie
+  /* maybe initialize smart paging */
+  if (smart_paging_initialized < 0)
+    smart_paging_init();
 
   void *(*hook) (size_t, size_t, const void *) =
     atomic_forced_read (__memalign_hook);
@@ -3194,6 +3449,11 @@ __libc_calloc (size_t n, size_t elem_size)
           return 0;
         }
     }
+
+  // Edit by Eddie
+  /* maybe initialize smart paging */
+  if (smart_paging_initialized < 0)
+    smart_paging_init();
 
   void *(*hook) (size_t, const void *) =
     atomic_forced_read (__malloc_hook);
