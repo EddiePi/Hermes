@@ -1,0 +1,213 @@
+./ChangeLog.11:	* login/programs/utmpd-private.h: Removed.
+./ChangeLog.7:	* login/programs/utmpd-private.h: Declare proc_utmp_eq.
+./ChangeLog.7:	* login/Makefile (utmpd-routines): Remove utmpd again, which is
+./ChangeLog.7:	* login/Makefile (utmpd-routines): Add utmpd.
+./ChangeLog.7:	* login/utmpd/utmpd-private.h: New file.
+./manual/llio.texi:@c      lll_lock (pd->lock) @asulock @aculock
+./manual/llio.texi:@c     lll_unlock (pd->lock) @aculock
+./nptl/allocatestack.c:  void *stack = (pd->stackblock
+./nptl/allocatestack.c:		 + (((((pd->stackblock_size - pd->guardsize) / 2)
+./nptl/allocatestack.c:		      & pagemask) + pd->guardsize) & pagemask));
+./nptl/allocatestack.c:  size_t len = pd->stackblock + pd->stackblock_size - stack;
+./nptl/allocatestack.c:  void *stack = pd->stackblock + pd->guardsize;
+./nptl/allocatestack.c:  size_t len = pd->stackblock_size - pd->guardsize;
+./nptl/allocatestack.c:  void *stack = pd->stackblock;
+./nptl/allocatestack.c:  size_t len = (uintptr_t) pd - pd->guardsize - (uintptr_t) pd->stackblock;
+./nptl/allocatestack.c:      pd->specific[0] = pd->specific_1stblock;
+./nptl/allocatestack.c:      pd->stackblock = (char *) attr->stackaddr - size;
+./nptl/allocatestack.c:      pd->stackblock_size = size;
+./nptl/allocatestack.c:      pd->user_stack = true;
+./nptl/allocatestack.c:      pd->header.multiple_threads = 1;
+./nptl/allocatestack.c:      pd->header.private_futex = THREAD_GETMEM (THREAD_SELF,
+./nptl/allocatestack.c:      pd->pid = THREAD_GETMEM (THREAD_SELF, pid);
+./nptl/allocatestack.c:      pd->setxid_futex = -1;
+./nptl/allocatestack.c:      list_add (&pd->list, &__stack_user);
+./nptl/allocatestack.c:	  pd->stackblock = mem;
+./nptl/allocatestack.c:	  pd->stackblock_size = size;
+./nptl/allocatestack.c:	  pd->specific[0] = pd->specific_1stblock;
+./nptl/allocatestack.c:	  pd->header.multiple_threads = 1;
+./nptl/allocatestack.c:	  pd->header.private_futex = THREAD_GETMEM (THREAD_SELF,
+./nptl/allocatestack.c:	  pd->setxid_futex = -1;
+./nptl/allocatestack.c:	  pd->pid = THREAD_GETMEM (THREAD_SELF, pid);
+./nptl/allocatestack.c:	  stack_list_add (&pd->list, &stack_used);
+./nptl/allocatestack.c:      if (__glibc_unlikely (guardsize > pd->guardsize))
+./nptl/allocatestack.c:	      stack_list_del (&pd->list);
+./nptl/allocatestack.c:	  pd->guardsize = guardsize;
+./nptl/allocatestack.c:      else if (__builtin_expect (pd->guardsize - guardsize > size - reqsize,
+./nptl/allocatestack.c:	  char *oldguard = mem + (((size - pd->guardsize) / 2) & ~pagesize_m1);
+./nptl/allocatestack.c:			oldguard + pd->guardsize - guard - guardsize,
+./nptl/allocatestack.c:	  if (mprotect ((char *) mem + guardsize, pd->guardsize - guardsize,
+./nptl/allocatestack.c:	  if (mprotect ((char *) pd - pd->guardsize,
+./nptl/allocatestack.c:			pd->guardsize - guardsize, prot) != 0)
+./nptl/allocatestack.c:	  pd->guardsize = guardsize;
+./nptl/allocatestack.c:      pd->reported_guardsize = guardsize;
+./nptl/allocatestack.c:  pd->lock = LLL_LOCK_INITIALIZER;
+./nptl/allocatestack.c:  pd->robust_head.futex_offset = (offsetof (pthread_mutex_t, __data.__lock)
+./nptl/allocatestack.c:  pd->robust_head.list_op_pending = NULL;
+./nptl/allocatestack.c:  pd->robust_prev = &pd->robust_head;
+./nptl/allocatestack.c:  pd->robust_head.list = &pd->robust_head;
+./nptl/allocatestack.c:  *stack = pd->stackblock;
+./nptl/allocatestack.c:  *stack = pd->stackblock;
+./nptl/allocatestack.c:  stack_list_del (&pd->list);
+./nptl/allocatestack.c:  if (__glibc_likely (! pd->user_stack))
+./nptl/nptl-init.c:  THREAD_SETMEM (pd, specific[0], &pd->specific_1stblock[0]);
+./nptl/nptl-init.c:    pd->robust_prev = &pd->robust_head;
+./nptl/nptl-init.c:    pd->robust_head.list = &pd->robust_head;
+./nptl/nptl-init.c:    pd->robust_head.futex_offset = (offsetof (pthread_mutex_t, __data.__lock)
+./nptl/nptl-init.c:    int res = INTERNAL_SYSCALL (set_robust_list, err, 2, &pd->robust_head,
+./nptl/nptl-init.c:  list_add (&pd->list, &__stack_user);
+./nptl/pthread_getcpuclockid.c:  if (pd->tid >= 1 << (8 * sizeof (*clockid) - CLOCK_IDFIELD_SIZE))
+./nptl/pthread_getcpuclockid.c:  *clockid = CLOCK_THREAD_CPUTIME_ID | (pd->tid << CLOCK_IDFIELD_SIZE);
+./nptl/default-sched.h:  assert ((pd->flags & (ATTR_FLAG_SCHED_SET | ATTR_FLAG_POLICY_SET)) != 0);
+./nptl/pthread_join.c:  pthread_cleanup_push (cleanup, &pd->joinid);
+./nptl/pthread_join.c:	   && (pd->cancelhandling
+./nptl/pthread_join.c:  else if (__builtin_expect (atomic_compare_and_exchange_bool_acq (&pd->joinid,
+./nptl/pthread_join.c:    lll_wait_tid (pd->tid);
+./nptl/pthread_join.c:      pd->tid = -1;
+./nptl/pthread_join.c:	*thread_return = pd->result;
+./nptl/pthread_join.c:  LIBC_PROBE (pthread_join_ret, 3, threadid, result, pd->result);
+./nptl/pthread-pids.h:  pd->pid = pd->tid = -1;
+./nptl/pthread_detach.c:  if (atomic_compare_and_exchange_bool_acq (&pd->joinid, pd, NULL))
+./nptl/pthread_detach.c:    if ((pd->cancelhandling & EXITING_BITMASK) != 0)
+./nptl/pthread_setschedparam.c:  lll_lock (pd->lock, LLL_PRIVATE);
+./nptl/pthread_setschedparam.c:  if (__builtin_expect (pd->tpp != NULL, 0)
+./nptl/pthread_setschedparam.c:      && pd->tpp->priomax > param->sched_priority)
+./nptl/pthread_setschedparam.c:      p.sched_priority = pd->tpp->priomax;
+./nptl/pthread_setschedparam.c:  if (__builtin_expect (__sched_setscheduler (pd->tid, policy,
+./nptl/pthread_setschedparam.c:      pd->schedpolicy = policy;
+./nptl/pthread_setschedparam.c:      memcpy (&pd->schedparam, orig_param, sizeof (struct sched_param));
+./nptl/pthread_setschedparam.c:      pd->flags |= ATTR_FLAG_SCHED_SET | ATTR_FLAG_POLICY_SET;
+./nptl/pthread_setschedparam.c:  lll_unlock (pd->lock, LLL_PRIVATE);
+./nptl/pthread_timedjoin.c:  if (__builtin_expect (atomic_compare_and_exchange_bool_acq (&pd->joinid,
+./nptl/pthread_timedjoin.c:  pthread_cleanup_push (cleanup, &pd->joinid);
+./nptl/pthread_timedjoin.c:  result = lll_timedwait_tid (pd->tid, abstime);
+./nptl/pthread_timedjoin.c:	*thread_return = pd->result;
+./nptl/pthread_timedjoin.c:    pd->joinid = NULL;
+./nptl/createthread.c:  pd->stopped_start = stopped_start;
+./nptl/createthread.c:    lll_lock (pd->lock, LLL_PRIVATE);
+./nptl/pthread_setschedprio.c:  lll_lock (pd->lock, LLL_PRIVATE);
+./nptl/pthread_setschedprio.c:  if (__builtin_expect (pd->tpp != NULL, 0) && pd->tpp->priomax > prio)
+./nptl/pthread_setschedprio.c:    param.sched_priority = pd->tpp->priomax;
+./nptl/pthread_setschedprio.c:  if (__glibc_unlikely (sched_setparam (pd->tid, &param) == -1))
+./nptl/pthread_setschedprio.c:      memcpy (&pd->schedparam, &param, sizeof (struct sched_param));
+./nptl/pthread_setschedprio.c:      pd->flags |= ATTR_FLAG_SCHED_SET;
+./nptl/pthread_setschedprio.c:  lll_unlock (pd->lock, LLL_PRIVATE);
+./nptl/pthread_create.c:  if (__builtin_expect (atomic_bit_test_set (&pd->cancelhandling,
+./nptl/pthread_create.c:      if (__glibc_unlikely (pd->tpp != NULL))
+./nptl/pthread_create.c:	  struct priority_protection_data *tpp = pd->tpp;
+./nptl/pthread_create.c:	  pd->tpp = NULL;
+./nptl/pthread_create.c:  __resp = &pd->res;
+./nptl/pthread_create.c:  if (__glibc_unlikely (atomic_exchange_acq (&pd->setxid_futex, 0) == -2))
+./nptl/pthread_create.c:    futex_wake (&pd->setxid_futex, 1, FUTEX_PRIVATE);
+./nptl/pthread_create.c:      INTERNAL_SYSCALL (set_robust_list, err, 2, &pd->robust_head,
+./nptl/pthread_create.c:  if (__glibc_unlikely (pd->parent_cancelhandling & CANCELING_BITMASK))
+./nptl/pthread_create.c:      if (__glibc_unlikely (pd->stopped_start))
+./nptl/pthread_create.c:	  lll_lock (pd->lock, LLL_PRIVATE);
+./nptl/pthread_create.c:	  lll_unlock (pd->lock, LLL_PRIVATE);
+./nptl/pthread_create.c:      LIBC_PROBE (pthread_start, 3, (pthread_t) pd, pd->start_routine, pd->arg);
+./nptl/pthread_create.c:      THREAD_SETMEM (pd, result, pd->start_routine (pd->arg));
+./nptl/pthread_create.c:  if (__glibc_unlikely (pd->report_events))
+./nptl/pthread_create.c:		   | pd->eventbuf.eventmask.event_bits[idx])) != 0)
+./nptl/pthread_create.c:	  if (pd->nextevent == NULL)
+./nptl/pthread_create.c:	      pd->eventbuf.eventnum = TD_DEATH;
+./nptl/pthread_create.c:	      pd->eventbuf.eventdata = pd;
+./nptl/pthread_create.c:		pd->nextevent = __nptl_last_event;
+./nptl/pthread_create.c:							   pd, pd->nextevent));
+./nptl/pthread_create.c:  atomic_bit_set (&pd->cancelhandling, EXITING_BIT);
+./nptl/pthread_create.c:  void *robust = pd->robust_head.list;
+./nptl/pthread_create.c:  __pthread_slist_t *robust = pd->robust_list.__next;
+./nptl/pthread_create.c:      && __builtin_expect (robust != (void *) &pd->robust_head, 0))
+./nptl/pthread_create.c:      while (robust != (void *) &pd->robust_head);
+./nptl/pthread_create.c:  size_t freesize = (sp - (char *) pd->stackblock) & ~pagesize_m1;
+./nptl/pthread_create.c:  assert (freesize < pd->stackblock_size);
+./nptl/pthread_create.c:    __madvise (pd->stackblock, freesize - PTHREAD_STACK_MIN, MADV_DONTNEED);
+./nptl/pthread_create.c:  else if (__glibc_unlikely (pd->cancelhandling & SETXID_BITMASK))
+./nptl/pthread_create.c:	futex_wait_simple (&pd->setxid_futex, 0, FUTEX_PRIVATE);
+./nptl/pthread_create.c:      while (pd->cancelhandling & SETXID_BITMASK);
+./nptl/pthread_create.c:      pd->setxid_futex = 0;
+./nptl/pthread_create.c:		       | pd->eventbuf.eventmask.event_bits[idx])) != 0);
+./nptl/pthread_create.c:  pd->header.self = pd;
+./nptl/pthread_create.c:  pd->header.tcb = pd;
+./nptl/pthread_create.c:  pd->start_routine = start_routine;
+./nptl/pthread_create.c:  pd->arg = arg;
+./nptl/pthread_create.c:  pd->flags = ((iattr->flags & ~(ATTR_FLAG_SCHED_SET | ATTR_FLAG_POLICY_SET))
+./nptl/pthread_create.c:  pd->joinid = iattr->flags & ATTR_FLAG_DETACHSTATE ? pd : NULL;
+./nptl/pthread_create.c:  pd->eventbuf = self->eventbuf;
+./nptl/pthread_create.c:  pd->schedpolicy = self->schedpolicy;
+./nptl/pthread_create.c:  pd->schedparam = self->schedparam;
+./nptl/pthread_create.c:  pd->parent_cancelhandling = THREAD_GETMEM (THREAD_SELF, cancelhandling);
+./nptl/pthread_create.c:          pd->schedpolicy = iattr->schedpolicy;
+./nptl/pthread_create.c:          pd->flags |= ATTR_FLAG_POLICY_SET;
+./nptl/pthread_create.c:          pd->schedparam = iattr->schedparam;
+./nptl/pthread_create.c:          pd->flags |= ATTR_FLAG_SCHED_SET;
+./nptl/pthread_create.c:      if ((pd->flags & (ATTR_FLAG_SCHED_SET | ATTR_FLAG_POLICY_SET))
+./nptl/pthread_create.c:	  assert (pd->stopped_start);
+./nptl/pthread_create.c:	  pd->eventbuf.eventnum = TD_CREATE;
+./nptl/pthread_create.c:	  pd->eventbuf.eventdata = pd;
+./nptl/pthread_create.c:	    pd->nextevent = __nptl_last_event;
+./nptl/pthread_create.c:						       pd, pd->nextevent)
+./nptl/pthread_create.c:	assert (pd->stopped_start);
+./nptl/pthread_create.c:	  if (__glibc_unlikely (atomic_exchange_acq (&pd->setxid_futex, 0)
+./nptl/pthread_create.c:	    futex_wake (&pd->setxid_futex, 1, FUTEX_PRIVATE);
+./nptl/pthread_create.c:      if (pd->stopped_start)
+./nptl/pthread_create.c:	lll_unlock (pd->lock, LLL_PRIVATE);
+./nptl/ChangeLog.old:	(start_thread): Similarly with pd->lock.  Use lll_robust_dead
+./nptl/ChangeLog.old:	as second argument to lll_{,un}lock macros on pd->lock.
+./nptl/ChangeLog.old:	(__pthread_initialize_minimal_internal): Initialize pd->report_events
+./nptl/ChangeLog.old:	tid isn't reread from pd->tid in between ESRCH test and the syscall.
+./nptl/ChangeLog.old:	* pthread_create.c (__free_tcb): Free pd->tpp structure.
+./nptl/ChangeLog.old:	pd->stackblock_size.
+./nptl/ChangeLog.old:	(create_thread): Do not lock pd->lock here.  If __ASSUME_CLONE_STOPPED
+./nptl/ChangeLog.old:	is not defined also unlock pd->lock for non-debugging case in case
+./nptl/ChangeLog.old:	* pthread_create.c (start_thread): Always get and release pd->lock
+./nptl/pthread_getschedparam.c:  lll_lock (pd->lock, LLL_PRIVATE);
+./nptl/pthread_getschedparam.c:  if ((pd->flags & ATTR_FLAG_SCHED_SET) == 0)
+./nptl/pthread_getschedparam.c:      if (__sched_getparam (pd->tid, &pd->schedparam) != 0)
+./nptl/pthread_getschedparam.c:	pd->flags |= ATTR_FLAG_SCHED_SET;
+./nptl/pthread_getschedparam.c:  if ((pd->flags & ATTR_FLAG_POLICY_SET) == 0)
+./nptl/pthread_getschedparam.c:      pd->schedpolicy = __sched_getscheduler (pd->tid);
+./nptl/pthread_getschedparam.c:      if (pd->schedpolicy == -1)
+./nptl/pthread_getschedparam.c:	pd->flags |= ATTR_FLAG_POLICY_SET;
+./nptl/pthread_getschedparam.c:      *policy = pd->schedpolicy;
+./nptl/pthread_getschedparam.c:      memcpy (param, &pd->schedparam, sizeof (struct sched_param));
+./nptl/pthread_getschedparam.c:  lll_unlock (pd->lock, LLL_PRIVATE);
+./nptl/pthread_cancel.c:      oldval = pd->cancelhandling;
+./nptl/pthread_cancel.c:	  if (atomic_compare_and_exchange_bool_acq (&pd->cancelhandling,
+./nptl/pthread_cancel.c:				  THREAD_GETMEM (THREAD_SELF, pid), pd->tid,
+./nptl/pthread_cancel.c:  while (atomic_compare_and_exchange_bool_acq (&pd->cancelhandling, newval,
+./nptl/pthread_tryjoin.c:  if (pd->tid != 0)
+./nptl/pthread_tryjoin.c:  if (atomic_compare_and_exchange_bool_acq (&pd->joinid, self, NULL))
+./nptl/pthread_tryjoin.c:    *thread_return = pd->result;
+./sysdeps/unix/sysv/linux/pthread_getcpuclockid.c:  const clockid_t tidclock = MAKE_THREAD_CPUCLOCK (pd->tid, CPUCLOCK_SCHED);
+./sysdeps/unix/sysv/linux/pthread_setaffinity.c:  res = INTERNAL_SYSCALL (sched_setaffinity, err, 3, pd->tid, cpusetsize,
+./sysdeps/unix/sysv/linux/default-sched.h:  if ((pd->flags & ATTR_FLAG_POLICY_SET) == 0)
+./sysdeps/unix/sysv/linux/default-sched.h:      pd->schedpolicy = INTERNAL_SYSCALL (sched_getscheduler, scerr, 1, 0);
+./sysdeps/unix/sysv/linux/default-sched.h:      pd->flags |= ATTR_FLAG_POLICY_SET;
+./sysdeps/unix/sysv/linux/default-sched.h:  if ((pd->flags & ATTR_FLAG_SCHED_SET) == 0)
+./sysdeps/unix/sysv/linux/default-sched.h:      INTERNAL_SYSCALL (sched_getparam, scerr, 2, 0, &pd->schedparam);
+./sysdeps/unix/sysv/linux/default-sched.h:      pd->flags |= ATTR_FLAG_SCHED_SET;
+./sysdeps/unix/sysv/linux/pthread_setname.c:  sprintf (fname, FMT, (unsigned int) pd->tid);
+./sysdeps/unix/sysv/linux/pthread_kill.c:  /* Force load of pd->tid into local variable or register.  Otherwise
+./sysdeps/unix/sysv/linux/pthread_kill.c:     EINVAL, because pd->tid would be cleared by the kernel.  */
+./sysdeps/unix/sysv/linux/pthread_kill.c:  pid_t tid = atomic_forced_read (pd->tid);
+./sysdeps/unix/sysv/linux/pthread_getaffinity.c:  int res = INTERNAL_SYSCALL (sched_getaffinity, err, 3, pd->tid,
+./sysdeps/unix/sysv/linux/pthread_getname.c:  sprintf (fname, FMT, (unsigned int) pd->tid);
+./sysdeps/unix/sysv/linux/pthread-pids.h:  pd->pid = pd->tid = INTERNAL_SYSCALL (set_tid_address, err, 1, &pd->tid);
+./sysdeps/unix/sysv/linux/createthread.c:  pd->stopped_start = stopped_start;
+./sysdeps/unix/sysv/linux/createthread.c:    lll_lock (pd->lock, LLL_PRIVATE);
+./sysdeps/unix/sysv/linux/createthread.c:				    clone_flags, pd, &pd->tid, tp, &pd->tid)
+./sysdeps/unix/sysv/linux/createthread.c:	  res = INTERNAL_SYSCALL (sched_setaffinity, err, 3, pd->tid,
+./sysdeps/unix/sysv/linux/createthread.c:				       pd->tid, SIGCANCEL);
+./sysdeps/unix/sysv/linux/createthread.c:	  res = INTERNAL_SYSCALL (sched_setscheduler, err, 3, pd->tid,
+./sysdeps/unix/sysv/linux/createthread.c:				  pd->schedpolicy, &pd->schedparam);
+./sysdeps/unix/sysv/linux/pthread_sigqueue.c:  /* Force load of pd->tid into local variable or register.  Otherwise
+./sysdeps/unix/sysv/linux/pthread_sigqueue.c:     EINVAL, because pd->tid would be cleared by the kernel.  */
+./sysdeps/unix/sysv/linux/pthread_sigqueue.c:  pid_t tid = atomic_forced_read (pd->tid);
+./sysdeps/nacl/exit-thread.h:      atomic_store_relaxed (&pd->tid, NACL_EXITING_TID);
+./sysdeps/nacl/exit-thread.h:      futex_wake ((unsigned int *) &pd->tid, 1, FUTEX_PRIVATE);
+./sysdeps/nacl/exit-thread.h:  __nacl_irt_thread.thread_exit (&pd->tid);
+./sysdeps/nacl/pthread-pids.h:  pd->tid = __nacl_get_tid (pd);
+./sysdeps/nacl/pthread-pids.h:  pd->pid = -1;
+./sysdeps/nacl/createthread.c:  pd->tid = __nacl_get_tid (pd);
+./sysdeps/nacl/createthread.c:  pd->stopped_start = stopped_start;
+./sysdeps/nacl/createthread.c:    lll_lock (pd->lock, LLL_PRIVATE);
