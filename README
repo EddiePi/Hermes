@@ -1,4 +1,4 @@
-# glibc-SmartPaging
+glibc-SmartPaging
 
 This is a modified glibc library for latency-sensitive applications such as redis.
 
@@ -6,6 +6,9 @@ The malloc.c is modified. We add a pre-allocation mechanism using the mmap sysca
 to allocate memory in a pool in advance. mmapped memory returned by the applications is also put in the pool. 
 In such case, future memory allocation for such applications would be way faster if there is memory in the pool.
 
+latency-sensitive applications should be specified by another daemon process using their PIDs.
+
+/* following is the original README of Glibc */
 This directory contains the sources of the GNU C Library.
 See the file "version.h" for what release version you have.
 
