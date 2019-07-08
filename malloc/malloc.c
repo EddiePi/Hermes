@@ -1322,16 +1322,16 @@ static struct mmap_pool m_pool;
 
 #define size2pool_index(s)  \
 ({  \
-  int i = 0;  \
-  int sz = s >> 18; \
+  int _i = 0;  \
+  size_t sz = (s) >> 18; \
   while (sz > 0) {  \
-    i++;  \
+    _i++;  \
     sz >>= 1; \
   } \
-  if (i > 15) { \
-    i = 15; \
+  if (_i > 15) { \
+    _i = 15; \
   } \
-  i;  \
+  _i;  \
 })
 
 #define foreach_shm_arr(index)  \
@@ -1400,6 +1400,7 @@ smart_paging_init(void)
     m_pool.pool[i].chunk_ptr = NULL;
     m_pool.pool[i].prev = m_pool.pool + i;
     m_pool.pool[i].next = m_pool.pool + i;
+    printf("sp: pool %d inited. addr: %ld, prev: %ld, next: %ld\n", i, m_pool.pool + i, m_pool.pool[i].prev, m_pool.pool[i].next);
   }
   /* check priority process once on start */
   check_pri_process();
@@ -1452,6 +1453,7 @@ get_pool_memory(INTERNAL_SIZE_T size)
   (void) mutex_lock(&pool_lock);
   while (pool_index < POOL_LENGTH)
   {
+    printf("sp: searching pool index: %d\n", pool_index);
     /* iterate through all pooled memory */
     chunk_wrap_head_ptr = m_pool.pool + pool_index;
     cur_ptr = chunk_wrap_head_ptr->next;
@@ -1482,6 +1484,7 @@ get_pool_memory(INTERNAL_SIZE_T size)
     /* we cannot find a chunk in this pool, increase the index */
     pool_index++;
   }
+  printf("sp: finished first round search\n");
   if (pool_index == POOL_LENGTH)
   {
     if (last_wrap_ptr == NULL)
@@ -1520,6 +1523,10 @@ get_pool_memory(INTERNAL_SIZE_T size)
     {
       printf("sp: no suitable memory in pool. use the largest one instead(upper)\n");
       cur_ptr = last_wrap_ptr;
+      cur_ptr->prev->next = cur_ptr->next;
+      cur_ptr->next->prev = cur_ptr->prev;
+      cur_ptr->next = NULL;
+      cur_ptr->prev = NULL;
     }
   }
   mutex_unlock(&pool_lock);
@@ -1557,17 +1564,18 @@ get_pool_memory(INTERNAL_SIZE_T size)
 static void 
 put_pool_memory(mchunkptr chunk)
 {
-  printf("put memory to pool\n");
+  printf("sp: put memory to pool\n");
   (void) mutex_lock(&pool_lock);
   int index = size2pool_index(chunk->size & ~(0x2));
-  struct malloc_chunk_wrap* wrap = (struct malloc_chunk_wrap*) __libc_malloc(WRAP_SIZE);
-  struct malloc_chunk_wrap* chunk_wrap_head_ptr = &m_pool.pool[index];
+  mwrapptr wrap = (struct malloc_chunk_wrap*) __libc_malloc(WRAP_SIZE);
+  mwrapptr chunk_wrap_head_ptr = m_pool.pool + index;
   wrap->chunk_ptr = chunk;
   wrap->next = chunk_wrap_head_ptr->next;
   wrap->prev = chunk_wrap_head_ptr;
   wrap->next->prev = wrap;
   wrap->prev->next = wrap;
   (void) mutex_unlock(&pool_lock);
+  printf("sp: found pool to put: %d, head addr: %ld, wrap: %ld, wrap-prev: %ld, wrap-next: %ld\n", index, chunk_wrap_head_ptr, wrap, wrap->prev, wrap->next);
   
   update_pooled_memory(chunk->size & ~(0x2));
 
@@ -1591,7 +1599,6 @@ int management_thread(void* arg)
     if (should_run == 2)
     {
       printf("sp: managing memory pool\n");
-      atomic_exchange_acq(&thread_running, 0);
       if (pooled_memory < fill_threshold && fill_threshold - pooled_memory > POOL_THRESHOLD)
       {
         printf("sp: filling memory\n");
@@ -1634,7 +1641,21 @@ int management_thread(void* arg)
               //set_head(p, size | 0x2);
               p->size = (size | 0x2);
             }
-            put_pool_memory(p);
+            (void) mutex_lock(&pool_lock);
+            int index = size2pool_index(p->size & ~(0x2));
+            printf("sp: chunk size: %ld, index: %d\n", p->size, index);
+            mwrapptr wrap = (struct malloc_chunk_wrap*) __libc_malloc(WRAP_SIZE);
+            mwrapptr chunk_wrap_head_ptr = m_pool.pool + index;
+            wrap->chunk_ptr = p;
+            wrap->next = chunk_wrap_head_ptr->next;
+            wrap->prev = chunk_wrap_head_ptr;
+            wrap->next->prev = wrap;
+            wrap->prev->next = wrap;
+            (void) mutex_unlock(&pool_lock);
+            printf("sp: found pool to put: %d, head addr: %ld, wrap: %ld, wrap-prev: %ld, wrap-next: %ld\n", index, chunk_wrap_head_ptr, wrap, wrap->prev, wrap->next);
+  
+            update_pooled_memory(p->size & ~(0x2));
+            //put_pool_memory(p);
             //update_pooled_memory(p->size & ~(0x2));
             printf("filling finished\n");
           }
@@ -1652,12 +1673,14 @@ int management_thread(void* arg)
         mwrapptr chunk_wrap_head_ptr;
         for (pool_index = POOL_LENGTH - 1; pool_index >=0; pool_index--)
         {
+          printf("sp: cleaning pool index: %d\n", pool_index);
           /* find the largest chunk in the pool */
           chunk_wrap_head_ptr = m_pool.pool + pool_index;
           mutex_lock(&pool_lock);
           cur_ptr = chunk_wrap_head_ptr->next;
           while (cur_ptr != chunk_wrap_head_ptr)
           {
+            printf("sp: found chunk to clean. index: %d, head addr: %ld, cur addr: %ld\n", pool_index, chunk_wrap_head_ptr, cur_ptr);
             /* unmap the chunk here */
             cur_ptr->prev->next = cur_ptr->next;
             cur_ptr->next->prev = cur_ptr->prev;
@@ -1670,19 +1693,21 @@ int management_thread(void* arg)
             __munmap ((char *) block, total_size);
             __libc_free((void *) cur_ptr);
             update_pooled_memory(-total_size);
+            printf("sp: finish cleaning chunk. head addr: %ld, head-prev %ld, head-next: %ld\n", chunk_wrap_head_ptr, chunk_wrap_head_ptr->prev, chunk_wrap_head_ptr->next);
             if (pooled_memory < clean_threshold || pooled_memory <= 0)
             {
               break;
             }
+            cur_ptr = chunk_wrap_head_ptr->next;
           }
           mutex_unlock(&pool_lock);
           if (pooled_memory < clean_threshold || pooled_memory <= 0)
           {
             break;
           }
-          pool_index--;
         }
       }
+      atomic_exchange_acq(&thread_running, 0);
     }
     else if (should_run == 0)
     {
