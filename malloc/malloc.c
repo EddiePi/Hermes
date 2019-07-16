@@ -1234,531 +1234,6 @@ nextchunk-> +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
   ((uintptr_t)(MALLOC_ALIGNMENT == 2 * SIZE_SZ ? (p) : chunk2mem (p)) \
    & MALLOC_ALIGN_MASK)
 
-
-
-// Edit by Eddie
-/* include header related to shm */
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#include <sys/types.h>
-#include <sys/errno.h>
-#include <sched.h>
-#include <sys/syscall.h>
-//#include <linux/futex.h>
-#include <sys/time.h>
-
-#define SHM_KEY 0xaaaa
-#define SHM_LENGTH 1024
-#define POOL_LENGTH 16
-/* this is 128kb */
-#define POOL_THRESHOLD 0x20000
-#define STACK_SIZE 65536
-#define SLEEP_TIME_US 500
-
-#define MREMAP
-
-/* declare function related to smart paging */
-static void smart_paging_init(void);
-static void init_shm(void);
-//static bool check_pri_process(void);
-static void put_pool_memory(mchunkptr);
-static mchunkptr get_pool_memory(INTERNAL_SIZE_T);
-int management_thread(void* arg);
-
-
-/* declare global variables related to smart paging */
-pid_t pid;
-static int smart_paging_initialized = -1;
-int has_shm;
-int is_pri_process;
-int should_lock_memory = 0;
-int* shm_array;
-int stack_init = -1;
-static char management_thread_stack[STACK_SIZE];
-static int clone_flags = (CLONE_VM | CLONE_SYSVSEM
-      | CLONE_SIGHAND | CLONE_THREAD
-//      | CLONE_PARENT_SETTID
-//      | CLONE_CHILD_CLEARTID | SIGCHLD
-      | 0);
-size_t fill_chunk_size = 1048576;
-size_t fill_threshold = 10485760;
-/* TODO: use a heuristic to calculate this value */
-int fill_count = 10;
-#define clean_threshold (fill_threshold*fill_count*2)
-size_t pooled_memory = 0;
-
-
-int thread_running = 0;
-
-/* used for mutex */
-mutex_t pool_lock = _LIBC_LOCK_INITIALIZER;
-mutex_t threshold_lock = _LIBC_LOCK_INITIALIZER;
-
-struct malloc_chunk_wrap
-{
-  mchunkptr chunk_ptr;
-  struct malloc_chunk_wrap *prev;
-  struct malloc_chunk_wrap *next;
-};
-typedef struct malloc_chunk_wrap* mwrapptr;
-
-#define WRAP_SIZE sizeof(struct malloc_chunk_wrap)
-
-/* 
-  each pool contains a mmap memory chunk within specific range.
-  CURRENT: we use 16 pools. The i-th pool has a size of 2^(i + 7) kb.
-  The size is shown as follows:
-  0     1     2     3   4   5   6   7    8    9    10    11    12    13  14  15
-  128K  256K  512K  1M  2M  4M  8M  16M  32M  64M  128M  256M  512M  1G  2G  4G~
-
-  TODO: should we use exponential interval or linear interval?
-  */
-struct mmap_pool 
-{
-  struct malloc_chunk_wrap pool[POOL_LENGTH];
-};
-
-static struct mmap_pool m_pool;
-
-#define size2pool_index(s)  \
-({  \
-  int _i = 0;  \
-  size_t sz = (s) >> 18; \
-  while (sz > 0) {  \
-    _i++;  \
-    sz >>= 1; \
-  } \
-  if (_i > 15) { \
-    _i = 15; \
-  } \
-  _i;  \
-})
-
-#define foreach_shm_arr(index)  \
-  for (index = 0; index < SHM_LENGTH; index++)
-
-/* implementation of declared functions */
-static void
-init_shm(void)
-{
-  int shmid = shmget(SHM_KEY, sizeof(int) * SHM_LENGTH, 0444|IPC_CREAT);
-  //printf("sp: hmid: %d\n", shmid);
-
-  /* set this value as false since we update this value later */
-  is_pri_process = 0;
-  if (shmid < 0)
-  {
-    has_shm = 0;
-    //printf("sp: error in get shm, errno: %s\n", strerror(errno));
-    return;
-  }
-  shm_array = (int *)shmat(shmid, NULL, 0);
-  has_shm = 1;
-  pid = getpid();
-  //printf("sp: got shm\n");
-}
-
-//static bool
-#define check_pri_process() \
-({  \
-  if (has_shm && is_pri_process == 0) \
-  { \
-    int i;  \
-    foreach_shm_arr(i)  \
-    { \
-      if (shm_array[i] == pid)  \
-      { \
-        is_pri_process = 1; \
-        should_lock_memory = 1; \
-        break;  \
-      } \
-    } \
-  } \
-  is_pri_process; \
-})
-
-/* 
- * init shm
- * init related data structure
- */
-static void
-smart_paging_init(void)
-{
-  //printf("sp: initializing smart paing\n");
-  if (smart_paging_initialized >= 0)
-  {
-    return;
-  }
-  smart_paging_initialized = 0;
-  init_shm();
-  for (int i = 0; i < POOL_LENGTH; i++)
-  {
-    m_pool.pool[i].chunk_ptr = NULL;
-    m_pool.pool[i].prev = m_pool.pool + i;
-    m_pool.pool[i].next = m_pool.pool + i;
-    //printf("sp: pool %d inited. addr: %ld, prev: %ld, next: %ld\n", i, m_pool.pool + i, m_pool.pool[i].prev, m_pool.pool[i].next);
-  }
-  /* check priority process once on start */
-  check_pri_process();
-
-  /* create auxiliary thread for memory management */
-  int thread_ret;
-  //printf("sp: creating management thread\n");
-  thread_ret = 0;
-  thread_ret = clone(&management_thread, 
-       (void*)management_thread_stack + STACK_SIZE, 
-       clone_flags, NULL);
-  if (thread_ret == -1)
-  {
-    //printf("sp: fail to create management thread, %s\n", strerror(errno));
-  }
-  else
-  {
-    //printf("sp: success to create management thread\n");
-  }
-
-  //printf("sp: smart paging initialized\n");
-}
-
-static void update_pooled_memory(size_t diff)
-{
-  //printf("update: getting mutex: threshold_lock\n");
-  mutex_lock(&threshold_lock);
-  //printf("update: got mutex: threshold_lock\n");
-  pooled_memory += diff;
-  //printf("update: releasing mutex: threshold_lock\n");
-  mutex_unlock(&threshold_lock);
-  //printf("update: released mutex: threshold_lock\n");
-  //printf("sp: updated pooled_memory:%ld\n", pooled_memory);
-}
-
-/* 
- * get memory from the pool
- */
-static mchunkptr 
-get_pool_memory(INTERNAL_SIZE_T size)
-{
-  //printf("sp: try to get memory from pool\n");
-  // we only use pool memory for large chunk
-  if (size < POOL_THRESHOLD)
-  {
-    return NULL;
-  }
-  int pool_index = size2pool_index(size);
-  // check whether we have chunk inside the current pool index
-  mwrapptr cur_ptr;
-  mwrapptr chunk_wrap_head_ptr;
-  mwrapptr last_wrap_ptr = NULL;
-  
-  //printf("get_pool: getting mutex: pool_lock\n");
-  (void) mutex_lock(&pool_lock);
-  //printf("get_pool: got mutex: pool_lock\n");
-  while (pool_index < POOL_LENGTH)
-  {
-    //printf("sp: searching pool index: %d\n", pool_index);
-    /* iterate through all pooled memory */
-    chunk_wrap_head_ptr = m_pool.pool + pool_index;
-    cur_ptr = chunk_wrap_head_ptr->next;
-    while (cur_ptr != chunk_wrap_head_ptr)
-    {
-      last_wrap_ptr = cur_ptr;
-      /* iterate through memory chunk in this pool */
-      if (cur_ptr->chunk_ptr->size >= size)
-      {
-        /* we have found a chunk, break */
-        break;
-      }
-      cur_ptr = cur_ptr->next;
-    }
-    if (cur_ptr != chunk_wrap_head_ptr)
-    {
-      /* we have found a chunk: 
-       * 1. detach the wrap from the double linked list
-       * 2. break 
-       */
-      cur_ptr->prev->next = cur_ptr->next;
-      cur_ptr->next->prev = cur_ptr->prev;
-      cur_ptr->next = NULL;
-      cur_ptr->prev = NULL;
-      break;
-    }
-
-    /* we cannot find a chunk in this pool, increase the index */
-    pool_index++;
-  }
-  //printf("sp: finished first round search, index: %d\n", pool_index);
-  if (pool_index == POOL_LENGTH)
-  {
-    if (last_wrap_ptr == NULL)
-    {
-      pool_index = size2pool_index(size) - 1;
-      cur_ptr = m_pool.pool;
-      while (pool_index >= 0)
-      {
-        /* find the largest chunk in the remaining pool */
-        chunk_wrap_head_ptr = m_pool.pool + pool_index;
-        cur_ptr = chunk_wrap_head_ptr->next;
-        if (cur_ptr != chunk_wrap_head_ptr)
-        {
-          break;
-        }
-        pool_index--;
-      }
-      if (cur_ptr == m_pool.pool)
-      {
-        /* nothing in pool */
-        //printf("sp: nothing in pool, fall back to normal mmap\n");
-        //printf("get_pool: releasing mutex (nothing): pool_lock\n");
-        mutex_unlock(&pool_lock);
-        //printf("get_pool: released mutex (nothing): pool_lock\n");
-        /* may be launch the management thread */
-        catomic_compare_and_exchange_bool_acq(&thread_running, 2, 0);
-        return NULL;
-      }
-      else
-      {
-        //printf("sp: no suitable memory in pool. use the largest one instead(lower)\n");
-        cur_ptr->prev->next = cur_ptr->next;
-        cur_ptr->next->prev = cur_ptr->prev;
-        cur_ptr->next = NULL;
-        cur_ptr->prev = NULL;
-      }
-    }
-    else
-    {
-      //printf("sp: no suitable memory in pool. use the largest one instead(upper)\n");
-      cur_ptr = last_wrap_ptr;
-      cur_ptr->prev->next = cur_ptr->next;
-      cur_ptr->next->prev = cur_ptr->prev;
-      cur_ptr->next = NULL;
-      cur_ptr->prev = NULL;
-    }
-  }
-  //printf("get_pool: releasing mutex: pool_lock\n");
-  mutex_unlock(&pool_lock);
-  //printf("get_pool: released mutex: pool_lock\n");
-
-  //printf("there is memory in pool, wrap addr: %ld, chunk addr: %ld\n", cur_ptr, cur_ptr->chunk_ptr);
-
-  /* if we reach here, it means there is at least one chunk in pool */
-  /* remap the chunk */
-  mchunkptr res = cur_ptr->chunk_ptr;
-  //__mremap (void *__addr, size_t __old_len, size_t __new_len, int __flags, ...)
-  
-  size_t old_size = cur_ptr->chunk_ptr->size & ~(0x2);
-  if (old_size < size)
-  {
-    res = (mchunkptr)__mremap((void *) cur_ptr->chunk_ptr, old_size, size, MREMAP_MAYMOVE);
-  }
-  __libc_free((void *) cur_ptr);
-
-  if ((void*)res != (void*)-1)
-  {  
-    //printf("sp: got memory from pool\n");
-    update_pooled_memory(-old_size);
-  }
-  else
-  {
-    printf("sp: error in remap, %s\n", strerror(errno));
-    return NULL;
-  }
-
-  /* may be launch the management thread */
-  catomic_compare_and_exchange_bool_acq(&thread_running, 2, 0);
-
-  return res;
-}
-
-/* put memory to pool */
-static void 
-put_pool_memory(mchunkptr chunk)
-{
-  //printf("sp: put memory to pool\n");
-  //printf("put_pool: getting mutex: pool_lock\n");
-  (void) mutex_lock(&pool_lock);
-  //printf("put_pool: got mutex: pool_lock\n");
-  int index = size2pool_index(chunk->size & ~(0x2));
-  mwrapptr wrap = (struct malloc_chunk_wrap*) __libc_malloc(WRAP_SIZE);
-  mwrapptr chunk_wrap_head_ptr = m_pool.pool + index;
-  wrap->chunk_ptr = chunk;
-  wrap->next = chunk_wrap_head_ptr->next;
-  wrap->prev = chunk_wrap_head_ptr;
-  wrap->next->prev = wrap;
-  wrap->prev->next = wrap;
-  //printf("put_pool: releasing mutex: pool_lock\n");
-  (void) mutex_unlock(&pool_lock);
-  //printf("put_pool: released mutex: pool_lock\n");
-  //printf("sp: found pool to put: %d, head addr: %ld, wrap: %ld, wrap-prev: %ld, wrap-next: %ld\n", index, chunk_wrap_head_ptr, wrap, wrap->prev, wrap->next);
-  
-  update_pooled_memory(chunk->size & ~(0x2));
-
-  /* may be launch the management thread */
-  catomic_compare_and_exchange_bool_acq(&thread_running, 2, 0);
-
-  return;
-}
-
-/*
- * multi-thread related
- */
-int management_thread(void* arg)
-{
-  //printf("sp: this is the management thread\n");
-  usleep(5000);
-  int should_run;
-  while(1)
-  {
-    should_run = catomic_compare_and_exchange_val_acq(&thread_running, 1, 2);
-    if (should_run == 2)
-    {
-      //printf("sp: managing memory pool\n");
-      if (pooled_memory < fill_threshold)
-      {
-        //printf("sp: filling memory\n");
-        /* basically, this is a copy from sysmalloc */
-        char *mm;
-        //size_t nb = fill_threshold - pooled_memory;
-        size_t size = fill_chunk_size;
-        size_t pagesize = GLRO(dl_pagesize);
-        size_t filled_size = 0;
-        size_t diff = fill_threshold - pooled_memory;
-        mwrapptr tail = NULL;
-        mwrapptr head = NULL;
-        mchunkptr p;
-        INTERNAL_SIZE_T front_misalign;
-        INTERNAL_SIZE_T correction;
-        if (MALLOC_ALIGNMENT == 2 * SIZE_SZ)
-          size = ALIGN_UP (size, pagesize);
-        else
-          size = ALIGN_UP (size + MALLOC_ALIGN_MASK, pagesize);
-        while ((unsigned long) filled_size < (unsigned long) diff)
-        {
-          //printf("sp: about to fill pool, fill size: %ld\n", size);
-          mm = (char *) (MMAP (0, size, PROT_READ | PROT_WRITE, MAP_LOCKED));
-          if (mm != MAP_FAILED)
-          {
-            if (MALLOC_ALIGNMENT == 2 * SIZE_SZ)
-            {
-              assert (((INTERNAL_SIZE_T) chunk2mem(mm) & MALLOC_ALIGN_MASK) == 0);
-              front_misalign = 0;
-            }
-            else
-              front_misalign = (INTERNAL_SIZE_T) chunk2mem (mm) & MALLOC_ALIGN_MASK;
-            if (front_misalign > 0)
-            {
-              correction = MALLOC_ALIGNMENT - front_misalign;
-              p = (mchunkptr) (mm + correction);
-              p->prev_size = correction;
-              // set_head(p, size);
-              p->size = ((size - correction) | 0x2);
-            }
-            else
-            {
-              p = (mchunkptr) mm;
-              //set_head(p, size | 0x2);
-              p->size = (size | 0x2);
-            }
-            //printf("filling: getting mutex: pool_lock\n");
-            mwrapptr wrap = (struct malloc_chunk_wrap*) __libc_malloc(WRAP_SIZE);
-            wrap->chunk_ptr = p;
-            if (tail == NULL)
-            {
-              tail = wrap;
-              head = wrap;
-              tail->next = tail;
-              tail->prev = tail;
-            }
-            wrap->next = head;
-            wrap->prev = tail;
-            wrap->next->prev = head;
-            wrap->prev->next = head;
-            head = wrap;
-            update_pooled_memory(p->size & ~(0x2));
-            filled_size += (p->size & ~(0x2));
-          }
-          else
-          {
-            printf("sp: mmap failed in filling process, %s\n", strerror(errno));
-          }
-          //printf("sp: got wrap\n");
-          (void) mutex_lock(&pool_lock);
-          //printf("filling: got mutex: pool_lock\n");
-          int index = size2pool_index(fill_chunk_size);
-          //printf("sp: chunk size: %ld, index: %d\n", p->size, index);
-          mwrapptr chunk_wrap_head_ptr = m_pool.pool + index;
-          tail->next = chunk_wrap_head_ptr->next;
-          head->prev = chunk_wrap_head_ptr;
-          tail->next->prev = tail;
-          head->prev->next = head;
-          //printf("filling: releasing mutex: pool_lock\n");
-          (void) mutex_unlock(&pool_lock);
-          //printf("filling: released mutex: pool_lock\n");
-          //printf("sp: found pool to put: %d, head addr: %ld, wrap: %ld, wrap-prev: %ld, wrap-next: %ld\n", index, chunk_wrap_head_ptr, wrap, wrap->prev, wrap->next);
-
-          //printf("filling finished\n");
-        }
-      }
-      else if (pooled_memory > clean_threshold)
-      {
-        //printf("sp: cleaning memory\n");
-        int pool_index;
-        mwrapptr cur_ptr;
-        mwrapptr chunk_wrap_head_ptr;
-        for (pool_index = POOL_LENGTH - 1; pool_index >=0; pool_index--)
-        {
-          //printf("sp: cleaning pool index: %d\n", pool_index);
-          /* find the largest chunk in the pool */
-          chunk_wrap_head_ptr = m_pool.pool + pool_index;
-          //printf("cleaning: getting mutex: pool_lock\n");
-          mutex_lock(&pool_lock);
-          //printf("cleaning: got mutex: pool_lock\n");
-          cur_ptr = chunk_wrap_head_ptr->next;
-          while (cur_ptr != chunk_wrap_head_ptr)
-          {
-            //printf("sp: found chunk to clean. index: %d, head addr: %ld, cur addr: %ld\n", pool_index, chunk_wrap_head_ptr, cur_ptr);
-            /* unmap the chunk here */
-            cur_ptr->prev->next = cur_ptr->next;
-            cur_ptr->next->prev = cur_ptr->prev;
-            cur_ptr->next = NULL;
-            cur_ptr->prev = NULL;
-            mchunkptr p = cur_ptr->chunk_ptr;
-            uintptr_t block = (uintptr_t) p - p->prev_size;
-            size_t total_size = (p->prev_size + p->size) & ~(0x2);
-  
-            __munmap ((char *) block, total_size);
-            __libc_free((void *) cur_ptr);
-            update_pooled_memory(-total_size);
-            //printf("sp: finish cleaning chunk. head addr: %ld, head-prev %ld, head-next: %ld\n", chunk_wrap_head_ptr, chunk_wrap_head_ptr->prev, chunk_wrap_head_ptr->next);
-            if (pooled_memory < clean_threshold || pooled_memory <= 0)
-            {
-              break;
-            }
-            cur_ptr = chunk_wrap_head_ptr->next;
-          }
-          //printf("cleaning: releasing mutex: pool_lock\n");
-          mutex_unlock(&pool_lock);
-          //printf("cleaning: released mutex: pool_lock\n");
-          if (pooled_memory < clean_threshold || pooled_memory <= 0)
-          {
-            break;
-          }
-        }
-      }
-      atomic_exchange_acq(&thread_running, 0);
-    }
-    else if (should_run == 0)
-    {
-      usleep(SLEEP_TIME_US);
-      continue;
-    }
-  }
-  return 0;
-}
-
-
 /*
    Check if a request is so large that it would wrap around zero when
    padded and aligned. To simplify some other code, the bound is made
@@ -2385,6 +1860,849 @@ void *weak_variable (*__memalign_hook)
 void weak_variable (*__after_morecore_hook) (void) = NULL;
 
 
+
+// Edit by Eddie
+/* -------------- Smart Paging Related ---------------- */
+/* include header related to shm */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/types.h>
+#include <sys/errno.h>
+#include <sched.h>
+#include <sys/syscall.h>
+//#include <linux/futex.h>
+#include <sys/time.h>
+
+#define SHM_KEY 0xaaaa
+#define SHM_LENGTH 1024
+#define POOL_LENGTH 16
+/* this is 128kb */
+#define POOL_THRESHOLD 0x20000
+#define STACK_SIZE 65536
+#define SLEEP_TIME_US 500
+
+#define MREMAP
+
+/* declare function related to smart paging */
+static void smart_paging_init(void);
+static void init_shm(void);
+//static bool check_pri_process(void);
+static void put_pool_memory(mchunkptr);
+static mchunkptr get_pool_memory(INTERNAL_SIZE_T);
+int management_thread(void* arg);
+
+
+/* declare global variables related to smart paging */
+pid_t pid;
+static int smart_paging_initialized = -1;
+int has_shm;
+int is_pri_process;
+int should_lock_memory = 0;
+int* shm_array;
+int stack_init = -1;
+static char management_thread_stack[STACK_SIZE];
+static int clone_flags = (CLONE_VM | CLONE_SYSVSEM
+      | CLONE_SIGHAND | CLONE_THREAD
+//      | CLONE_PARENT_SETTID
+//      | CLONE_CHILD_CLEARTID | SIGCHLD
+      | 0);
+size_t fill_chunk_size = 1048576;
+size_t fill_threshold = 10485760;
+/* TODO: use a heuristic to calculate this value */
+int fill_count = 10;
+#define clean_threshold (fill_threshold*fill_count*2)
+size_t pooled_memory = 0;
+
+int thread_running = 0;
+
+int expand_op = 0;
+mutex_t expand_op_lock = _LIBC_LOCK_INITIALIZER;
+
+#define EXPAND_MMAP 0x1;
+#define EXPAND_SBRK 0x2;
+
+#define set_expand_op(value) \
+({  \
+  if (expand_op & (value) == 0) \
+  { \
+    mutex_lock(&expand_op_lock);  \
+    expand_op = expand_op | (value); \
+    mutex_unlock(&expand_op_lock);  \
+  } \
+})
+
+#define reset_expand_op(value) \
+({  \
+  mutex_lock(&expand_op_lock);  \
+  expand_op = expand_op & ~(value); \
+  mutex_unlock(&expand_op_lock);  \
+})
+
+/* used for mutex */
+mutex_t pool_lock = _LIBC_LOCK_INITIALIZER;
+mutex_t threshold_lock = _LIBC_LOCK_INITIALIZER;
+mutex_t sbrk_lock = _LIBC_LOCK_INITIALIZER;
+
+struct malloc_chunk_wrap
+{
+  mchunkptr chunk_ptr;
+  struct malloc_chunk_wrap *prev;
+  struct malloc_chunk_wrap *next;
+};
+typedef struct malloc_chunk_wrap* mwrapptr;
+
+#define WRAP_SIZE sizeof(struct malloc_chunk_wrap)
+
+/* 
+  each pool contains a mmap memory chunk within specific range.
+  CURRENT: we use 16 pools. The i-th pool has a size of 2^(i + 7) kb.
+  The size is shown as follows:
+  0     1     2     3   4   5   6   7    8    9    10    11    12    13  14  15
+  128K  256K  512K  1M  2M  4M  8M  16M  32M  64M  128M  256M  512M  1G  2G  4G~
+
+  TODO: should we use exponential interval or linear interval?
+  */
+struct mmap_pool 
+{
+  struct malloc_chunk_wrap pool[POOL_LENGTH];
+};
+
+static struct mmap_pool m_pool;
+
+#define size2pool_index(s)  \
+({  \
+  int _i = 0;  \
+  size_t sz = (s) >> 18; \
+  while (sz > 0) {  \
+    _i++;  \
+    sz >>= 1; \
+  } \
+  if (_i > 15) { \
+    _i = 15; \
+  } \
+  _i;  \
+})
+
+#define foreach_shm_arr(index)  \
+  for (index = 0; index < SHM_LENGTH; index++)
+
+/* implementation of declared functions */
+static void
+init_shm(void)
+{
+  int shmid = shmget(SHM_KEY, sizeof(int) * SHM_LENGTH, 0444|IPC_CREAT);
+  //printf("sp: hmid: %d\n", shmid);
+
+  /* set this value as false since we update this value later */
+  is_pri_process = 0;
+  if (shmid < 0)
+  {
+    has_shm = 0;
+    //printf("sp: error in get shm, errno: %s\n", strerror(errno));
+    return;
+  }
+  shm_array = (int *)shmat(shmid, NULL, 0);
+  has_shm = 1;
+  pid = getpid();
+  //printf("sp: got shm\n");
+}
+
+//static bool
+#define check_pri_process() \
+({  \
+  if (has_shm && is_pri_process == 0) \
+  { \
+    int i;  \
+    foreach_shm_arr(i)  \
+    { \
+      if (shm_array[i] == pid)  \
+      { \
+        is_pri_process = 1; \
+        should_lock_memory = 1; \
+        break;  \
+      } \
+    } \
+  } \
+  is_pri_process; \
+})
+
+/* 
+ * init shm
+ * init related data structure
+ */
+static void
+smart_paging_init(void)
+{
+  //printf("sp: initializing smart paing\n");
+  if (smart_paging_initialized >= 0)
+  {
+    return;
+  }
+  smart_paging_initialized = 0;
+  init_shm();
+  for (int i = 0; i < POOL_LENGTH; i++)
+  {
+    m_pool.pool[i].chunk_ptr = NULL;
+    m_pool.pool[i].prev = m_pool.pool + i;
+    m_pool.pool[i].next = m_pool.pool + i;
+    //printf("sp: pool %d inited. addr: %ld, prev: %ld, next: %ld\n", i, m_pool.pool + i, m_pool.pool[i].prev, m_pool.pool[i].next);
+  }
+  /* check priority process once on start */
+  check_pri_process();
+
+  /* create auxiliary thread for memory management */
+  int thread_ret;
+  //printf("sp: creating management thread\n");
+  thread_ret = 0;
+  thread_ret = clone(&management_thread, 
+       (void*)management_thread_stack + STACK_SIZE, 
+       clone_flags, NULL);
+  if (thread_ret == -1)
+  {
+    //printf("sp: fail to create management thread, %s\n", strerror(errno));
+  }
+  else
+  {
+    //printf("sp: success to create management thread\n");
+  }
+
+  //printf("sp: smart paging initialized\n");
+}
+
+static void update_pooled_memory(size_t diff)
+{
+  //printf("update: getting mutex: threshold_lock\n");
+  mutex_lock(&threshold_lock);
+  //printf("update: got mutex: threshold_lock\n");
+  pooled_memory += diff;
+  //printf("update: releasing mutex: threshold_lock\n");
+  mutex_unlock(&threshold_lock);
+  //printf("update: released mutex: threshold_lock\n");
+  //printf("sp: updated pooled_memory:%ld\n", pooled_memory);
+}
+
+/* 
+ * get memory from the pool
+ */
+static mchunkptr 
+get_pool_memory(INTERNAL_SIZE_T size)
+{
+  //printf("sp: try to get memory from pool\n");
+  // we only use pool memory for large chunk
+  if (size < POOL_THRESHOLD)
+  {
+    return NULL;
+  }
+  int pool_index = size2pool_index(size);
+  // check whether we have chunk inside the current pool index
+  mwrapptr cur_ptr;
+  mwrapptr chunk_wrap_head_ptr;
+  mwrapptr last_wrap_ptr = NULL;
+  
+  //printf("get_pool: getting mutex: pool_lock\n");
+  (void) mutex_lock(&pool_lock);
+  //printf("get_pool: got mutex: pool_lock\n");
+  while (pool_index < POOL_LENGTH)
+  {
+    //printf("sp: searching pool index: %d\n", pool_index);
+    /* iterate through all pooled memory */
+    chunk_wrap_head_ptr = m_pool.pool + pool_index;
+    cur_ptr = chunk_wrap_head_ptr->next;
+    while (cur_ptr != chunk_wrap_head_ptr)
+    {
+      last_wrap_ptr = cur_ptr;
+      /* iterate through memory chunk in this pool */
+      if (cur_ptr->chunk_ptr->size >= size)
+      {
+        /* we have found a chunk, break */
+        break;
+      }
+      cur_ptr = cur_ptr->next;
+    }
+    if (cur_ptr != chunk_wrap_head_ptr)
+    {
+      /* we have found a chunk: 
+       * 1. detach the wrap from the double linked list
+       * 2. break 
+       */
+      cur_ptr->prev->next = cur_ptr->next;
+      cur_ptr->next->prev = cur_ptr->prev;
+      cur_ptr->next = NULL;
+      cur_ptr->prev = NULL;
+      break;
+    }
+
+    /* we cannot find a chunk in this pool, increase the index */
+    pool_index++;
+  }
+  //printf("sp: finished first round search, index: %d\n", pool_index);
+  if (pool_index == POOL_LENGTH)
+  {
+    if (last_wrap_ptr == NULL)
+    {
+      pool_index = size2pool_index(size) - 1;
+      cur_ptr = m_pool.pool;
+      while (pool_index >= 0)
+      {
+        /* find the largest chunk in the remaining pool */
+        chunk_wrap_head_ptr = m_pool.pool + pool_index;
+        cur_ptr = chunk_wrap_head_ptr->next;
+        if (cur_ptr != chunk_wrap_head_ptr)
+        {
+          break;
+        }
+        pool_index--;
+      }
+      if (cur_ptr == m_pool.pool)
+      {
+        /* nothing in pool */
+        //printf("sp: nothing in pool, fall back to normal mmap\n");
+        //printf("get_pool: releasing mutex (nothing): pool_lock\n");
+        mutex_unlock(&pool_lock);
+        //printf("get_pool: released mutex (nothing): pool_lock\n");
+        /* maybe launch the management thread and fill pool by mmap */
+        set_expand_op(EXPAND_MMAP);
+        catomic_compare_and_exchange_bool_acq(&thread_running, 2, 0);
+        return NULL;
+      }
+      else
+      {
+        //printf("sp: no suitable memory in pool. use the largest one instead(lower)\n");
+        cur_ptr->prev->next = cur_ptr->next;
+        cur_ptr->next->prev = cur_ptr->prev;
+        cur_ptr->next = NULL;
+        cur_ptr->prev = NULL;
+      }
+    }
+    else
+    {
+      //printf("sp: no suitable memory in pool. use the largest one instead(upper)\n");
+      cur_ptr = last_wrap_ptr;
+      cur_ptr->prev->next = cur_ptr->next;
+      cur_ptr->next->prev = cur_ptr->prev;
+      cur_ptr->next = NULL;
+      cur_ptr->prev = NULL;
+    }
+  }
+  //printf("get_pool: releasing mutex: pool_lock\n");
+  mutex_unlock(&pool_lock);
+  //printf("get_pool: released mutex: pool_lock\n");
+
+  //printf("there is memory in pool, wrap addr: %ld, chunk addr: %ld\n", cur_ptr, cur_ptr->chunk_ptr);
+
+  /* if we reach here, it means there is at least one chunk in pool */
+  /* remap the chunk */
+  mchunkptr res = cur_ptr->chunk_ptr;
+  //__mremap (void *__addr, size_t __old_len, size_t __new_len, int __flags, ...)
+  
+  size_t old_size = cur_ptr->chunk_ptr->size & ~(0x2);
+  if (old_size < size)
+  {
+    res = (mchunkptr)__mremap((void *) cur_ptr->chunk_ptr, old_size, size, MREMAP_MAYMOVE);
+  }
+  __libc_free((void *) cur_ptr);
+
+  if ((void*)res != (void*)-1)
+  {  
+    //printf("sp: got memory from pool\n");
+    update_pooled_memory(-old_size);
+  }
+  else
+  {
+    printf("sp: error in remap, %s\n", strerror(errno));
+    return NULL;
+  }
+
+  /* may be launch the management thread */
+  set_expand_op(EXPAND_MMAP);
+  catomic_compare_and_exchange_bool_acq(&thread_running, 2, 0);
+
+  return res;
+}
+
+/* put memory to pool */
+static void 
+put_pool_memory(mchunkptr chunk)
+{
+  //printf("sp: put memory to pool\n");
+  //printf("put_pool: getting mutex: pool_lock\n");
+  (void) mutex_lock(&pool_lock);
+  //printf("put_pool: got mutex: pool_lock\n");
+  int index = size2pool_index(chunk->size & ~(0x2));
+  mwrapptr wrap = (struct malloc_chunk_wrap*) __libc_malloc(WRAP_SIZE);
+  mwrapptr chunk_wrap_head_ptr = m_pool.pool + index;
+  wrap->chunk_ptr = chunk;
+  wrap->next = chunk_wrap_head_ptr->next;
+  wrap->prev = chunk_wrap_head_ptr;
+  wrap->next->prev = wrap;
+  wrap->prev->next = wrap;
+  //printf("put_pool: releasing mutex: pool_lock\n");
+  (void) mutex_unlock(&pool_lock);
+  //printf("put_pool: released mutex: pool_lock\n");
+  //printf("sp: found pool to put: %d, head addr: %ld, wrap: %ld, wrap-prev: %ld, wrap-next: %ld\n", index, chunk_wrap_head_ptr, wrap, wrap->prev, wrap->next);
+  
+  update_pooled_memory(chunk->size & ~(0x2));
+
+  /* may be launch the management thread */
+  set_expand_op(EXPAND_MMAP);
+  catomic_compare_and_exchange_bool_acq(&thread_running, 2, 0);
+
+  return;
+}
+
+/*
+ * multi-thread related
+ */
+int management_thread(void* arg)
+{
+  //printf("sp: this is the management thread\n");
+  usleep(5000);
+  int should_run;
+  while(1)
+  {
+    should_run = catomic_compare_and_exchange_val_acq(&thread_running, 1, 2);
+    if (should_run == 2)
+    {
+      /* expand memory by mmap */
+      //printf("sp: managing memory pool\n");
+      if (expand_op & EXPAND_MMAP != 0)
+      {
+        if (pooled_memory < fill_threshold)
+        {
+          //printf("sp: filling memory\n");
+          /* basically, this is a copy from sysmalloc */
+          char *mm;
+          //size_t nb = fill_threshold - pooled_memory;
+          size_t size = fill_chunk_size;
+          size_t pagesize = GLRO(dl_pagesize);
+          size_t filled_size = 0;
+          size_t diff = fill_threshold - pooled_memory;
+          mwrapptr tail = NULL;
+          mwrapptr head = NULL;
+          mchunkptr p;
+          INTERNAL_SIZE_T front_misalign;
+          INTERNAL_SIZE_T correction;
+          if (MALLOC_ALIGNMENT == 2 * SIZE_SZ)
+            size = ALIGN_UP (size, pagesize);
+          else
+            size = ALIGN_UP (size + MALLOC_ALIGN_MASK, pagesize);
+          while ((unsigned long) filled_size < (unsigned long) diff)
+          {
+            //printf("sp: about to fill pool, fill size: %ld\n", size);
+            mm = (char *) (MMAP (0, size, PROT_READ | PROT_WRITE, MAP_LOCKED));
+            if (mm != MAP_FAILED)
+            {
+              if (MALLOC_ALIGNMENT == 2 * SIZE_SZ)
+              {
+                assert (((INTERNAL_SIZE_T) chunk2mem(mm) & MALLOC_ALIGN_MASK) == 0);
+                front_misalign = 0;
+              }
+              else
+                front_misalign = (INTERNAL_SIZE_T) chunk2mem (mm) & MALLOC_ALIGN_MASK;
+              if (front_misalign > 0)
+              {
+                correction = MALLOC_ALIGNMENT - front_misalign;
+                p = (mchunkptr) (mm + correction);
+                p->prev_size = correction;
+                // set_head(p, size);
+                p->size = ((size - correction) | 0x2);
+              }
+              else
+              {
+                p = (mchunkptr) mm;
+                //set_head(p, size | 0x2);
+                p->size = (size | 0x2);
+              }
+              //printf("filling: getting mutex: pool_lock\n");
+              mwrapptr wrap = (struct malloc_chunk_wrap*) __libc_malloc(WRAP_SIZE);
+              wrap->chunk_ptr = p;
+              if (tail == NULL)
+              {
+                tail = wrap;
+                head = wrap;
+                tail->next = tail;
+                tail->prev = tail;
+              }
+              wrap->next = head;
+              wrap->prev = tail;
+              wrap->next->prev = head;
+              wrap->prev->next = head;
+              head = wrap;
+              update_pooled_memory(p->size & ~(0x2));
+              filled_size += (p->size & ~(0x2));
+              //printf("sp: got wrap\n");
+              (void) mutex_lock(&pool_lock);
+              //printf("filling: got mutex: pool_lock\n");
+              int index = size2pool_index(fill_chunk_size);
+              //printf("sp: chunk size: %ld, index: %d\n", p->size, index);
+              mwrapptr chunk_wrap_head_ptr = m_pool.pool + index;
+              tail->next = chunk_wrap_head_ptr->next;
+              head->prev = chunk_wrap_head_ptr;
+              tail->next->prev = tail;
+              head->prev->next = head;
+              //printf("filling: releasing mutex: pool_lock\n");
+              (void) mutex_unlock(&pool_lock);
+              //printf("filling: released mutex: pool_lock\n");
+              //printf("sp: found pool to put: %d, head addr: %ld, wrap: %ld, wrap-prev: %ld, wrap-next: %ld\n", index, chunk_wrap_head_ptr, wrap, wrap->prev, wrap->next);
+              //printf("filling finished\n");
+            }
+            else
+            {
+              printf("sp: mmap failed in filling process, %s\n", strerror(errno));
+            }
+          } // end while ((unsigned long) filled_size < (unsigned long) diff)
+        } // end if (pooled_memory < fill_threshold)
+        else if (pooled_memory > clean_threshold)
+        {
+          //printf("sp: cleaning memory\n");
+          int pool_index;
+          mwrapptr cur_ptr;
+          mwrapptr chunk_wrap_head_ptr;
+          for (pool_index = POOL_LENGTH - 1; pool_index >= 0; pool_index--)
+          {
+            //printf("sp: cleaning pool index: %d\n", pool_index);
+            /* find the largest chunk in the pool */
+            chunk_wrap_head_ptr = m_pool.pool + pool_index;
+            //printf("cleaning: getting mutex: pool_lock\n");
+            mutex_lock(&pool_lock);
+            //printf("cleaning: got mutex: pool_lock\n");
+            cur_ptr = chunk_wrap_head_ptr->next;
+            while (cur_ptr != chunk_wrap_head_ptr)
+            {
+              //printf("sp: found chunk to clean. index: %d, head addr: %ld, cur addr: %ld\n", pool_index, chunk_wrap_head_ptr, cur_ptr);
+              /* unmap the chunk here */
+              cur_ptr->prev->next = cur_ptr->next;
+              cur_ptr->next->prev = cur_ptr->prev;
+              cur_ptr->next = NULL;
+              cur_ptr->prev = NULL;
+              mchunkptr p = cur_ptr->chunk_ptr;
+              uintptr_t block = (uintptr_t) p - p->prev_size;
+              size_t total_size = (p->prev_size + p->size) & ~(0x2);
+    
+              __munmap ((char *) block, total_size);
+              __libc_free((void *) cur_ptr);
+              update_pooled_memory(-total_size);
+              //printf("sp: finish cleaning chunk. head addr: %ld, head-prev %ld, head-next: %ld\n", chunk_wrap_head_ptr, chunk_wrap_head_ptr->prev, chunk_wrap_head_ptr->next);
+              if (pooled_memory < clean_threshold || pooled_memory <= 0)
+              {
+                break;
+              }
+              cur_ptr = chunk_wrap_head_ptr->next;
+            }
+            //printf("cleaning: releasing mutex: pool_lock\n");
+            mutex_unlock(&pool_lock);
+            //printf("cleaning: released mutex: pool_lock\n");
+            if (pooled_memory < clean_threshold || pooled_memory <= 0)
+            {
+              break;
+            }
+          }
+        } // end else if (pooled_memory > fill_threshold)
+        reset_expand_op(EXPAND_MMAP);
+      } // end if (expand_op & EXPAND_MMAP != 0)
+
+      /* expand memory by sbrk */
+      if (expand_op & EXPAND_SBRK != 0)
+      {
+        mstate av = &main_arena;
+        mutex_lock(&sbrk_lock);
+        mchunkptr old_top = av->top;
+        size_t old_size = chunksize(old_top);
+        char *old_end = (char *) (chunk_at_offset(old_top, old_size));
+        size_t size = 1024 * 1024 + MINSIZE;
+        char *brk = (char *) (MORECORE_FAILURE);
+        char * snd_brk = (char *) (MORECORE_FAILURE);
+
+        /*
+         If contiguous, we can subtract out existing space that we hope to
+         combine with new space. We add it back later only if
+         we don't actually get contiguous space.
+       */
+
+        if (contiguous (av))
+          size -= old_size;
+
+        /*
+           Round to a multiple of page size.
+           If MORECORE is not contiguous, this ensures that we only call it
+           with whole-page arguments.  And if MORECORE is contiguous and
+           this is not first time through, this preserves page-alignment of
+           previous calls. Otherwise, we correct to page-align below.
+         */
+
+        size = ALIGN_UP (size, pagesize);
+
+        /*
+           Don't try to call MORECORE if argument is so big as to appear
+           negative. Note that since mmap takes size_t arg, it may succeed
+           below even if we cannot call MORECORE.
+         */
+
+        if (size > 0)
+        {
+          brk = (char *) (MORECORE (size));
+          LIBC_PROBE (memory_sbrk_more, 2, brk, size);
+        }
+
+        if (brk != (char *) (MORECORE_FAILURE))
+        {
+          /* Call the `morecore' hook if necessary.  */
+          void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
+          if (__builtin_expect (hook != NULL, 0))
+            (*hook)();
+          // TODO: we should lock the memory here
+          if (mlock((void *)brk, size) != 0)
+          {
+            printf("sp: error when reserving memory use sbrk: %s\n", strerror(errno));
+          }
+        }
+        else
+        {
+          /*
+             If have mmap, try using it as a backup when MORECORE fails or
+             cannot be used. This is worth doing on systems that have "holes" in
+             address space, so sbrk cannot extend to give contiguous space, but
+             space is available elsewhere.  Note that we ignore mmap max count
+             and threshold limits, since the space will not be used as a
+             segregated mmap region.
+           */
+
+          /* Cannot merge with old top, so add its size back in */
+          if (contiguous (av))
+            size = ALIGN_UP (size + old_size, pagesize);
+
+          /* If we are relying on mmap as backup, then use larger units */
+          if ((unsigned long) (size) < (unsigned long) (MMAP_AS_MORECORE_SIZE))
+            size = MMAP_AS_MORECORE_SIZE;
+
+          /* Don't try if size wraps around 0 */
+          if ((unsigned long) (size) > (unsigned long) (nb))
+          {
+            char *mbrk = (char *) (MMAP (0, size, PROT_READ | PROT_WRITE, MAP_LOCKED));
+
+            if (mbrk != MAP_FAILED)
+            {
+              /* We do not need, and cannot use, another sbrk call to find end */
+              brk = mbrk;
+              snd_brk = brk + size;
+
+              /*
+                 Record that we no longer have a contiguous sbrk region.
+                 After the first time mmap is used as backup, we do not
+                 ever rely on contiguous space since this could incorrectly
+                 bridge regions.
+               */
+              set_noncontiguous (av);
+            }
+          }
+        }
+
+        if (brk != (char *) (MORECORE_FAILURE))
+        {
+          if (mp_.sbrk_base == 0)
+            mp_.sbrk_base = brk;
+          av->system_mem += size;
+
+          /*
+             If MORECORE extends previous space, we can likewise extend top size.
+           */
+
+          if (brk == old_end && snd_brk == (char *) (MORECORE_FAILURE))
+          {
+            set_head (old_top, (size + old_size) | PREV_INUSE);
+          }
+
+          else if (contiguous (av) && old_size && brk < old_end)
+          {
+            /* Oops!  Someone else killed our space..  Can't touch anything.  */
+            malloc_printerr (3, "break adjusted to free malloc space", brk,
+           av);
+          }
+
+          /*
+             Otherwise, make adjustments:
+
+           * If the first time through or noncontiguous, we need to call sbrk
+              just to find out where the end of memory lies.
+
+           * We need to ensure that all returned chunks from malloc will meet
+              MALLOC_ALIGNMENT
+
+           * If there was an intervening foreign sbrk, we need to adjust sbrk
+              request size to account for fact that we will not be able to
+              combine new space with existing space in old_top.
+
+           * Almost all systems internally allocate whole pages at a time, in
+              which case we might as well use the whole last page of request.
+              So we allocate enough more memory to hit a page boundary now,
+              which in turn causes future contiguous calls to page-align.
+           */
+
+          else
+          {
+            front_misalign = 0;
+            end_misalign = 0;
+            correction = 0;
+            aligned_brk = brk;
+
+            /* handle contiguous cases */
+            if (contiguous (av))
+            {
+              /* Count foreign sbrk as system_mem.  */
+              if (old_size)
+                av->system_mem += brk - old_end;
+
+              /* Guarantee alignment of first new chunk made from this space */
+
+              front_misalign = (INTERNAL_SIZE_T) chunk2mem (brk) & MALLOC_ALIGN_MASK;
+              if (front_misalign > 0)
+              {
+                /*
+                   Skip over some bytes to arrive at an aligned position.
+                   We don't need to specially mark these wasted front bytes.
+                   They will never be accessed anyway because
+                   prev_inuse of av->top (and any chunk created from its start)
+                   is always true after initialization.
+                 */
+
+                correction = MALLOC_ALIGNMENT - front_misalign;
+                aligned_brk += correction;
+              }
+
+              /*
+                 If this isn't adjacent to existing space, then we will not
+                 be able to merge with old_top space, so must add to 2nd request.
+               */
+
+              correction += old_size;
+
+              /* Extend the end address to hit a page boundary */
+              end_misalign = (INTERNAL_SIZE_T) (brk + size + correction);
+              correction += (ALIGN_UP (end_misalign, pagesize)) - end_misalign;
+
+              assert (correction >= 0);
+              snd_brk = (char *) (MORECORE (correction));
+
+              /*
+                 If can't allocate correction, try to at least find out current
+                 brk.  It might be enough to proceed without failing.
+
+                 Note that if second sbrk did NOT fail, we assume that space
+                 is contiguous with first sbrk. This is a safe assumption unless
+                 program is multithreaded but doesn't use locks and a foreign sbrk
+                 occurred between our first and second calls.
+               */
+
+              if (snd_brk == (char *) (MORECORE_FAILURE))
+              {
+                correction = 0;
+                snd_brk = (char *) (MORECORE (0));
+              }
+              else
+              {
+                /* Call the `morecore' hook if necessary.  */
+                void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
+                if (__builtin_expect (hook != NULL, 0))
+                  (*hook)();
+              }
+            }
+
+            /* handle non-contiguous cases */
+            else
+            {
+              if (MALLOC_ALIGNMENT == 2 * SIZE_SZ)
+                /* MORECORE/mmap must correctly align */
+                assert (((unsigned long) chunk2mem (brk) & MALLOC_ALIGN_MASK) == 0);
+              else
+              {
+                front_misalign = (INTERNAL_SIZE_T) chunk2mem (brk) & MALLOC_ALIGN_MASK;
+                if (front_misalign > 0)
+                {
+                  /*
+                     Skip over some bytes to arrive at an aligned position.
+                     We don't need to specially mark these wasted front bytes.
+                     They will never be accessed anyway because
+                     prev_inuse of av->top (and any chunk created from its start)
+                     is always true after initialization.
+                   */
+
+                  aligned_brk += MALLOC_ALIGNMENT - front_misalign;
+                }
+              }
+
+              /* Find out current end of memory */
+              if (snd_brk == (char *) (MORECORE_FAILURE))
+              {
+                snd_brk = (char *) (MORECORE (0));
+              }
+            }
+
+            /* Adjust top based on results of second sbrk */
+            if (snd_brk != (char *) (MORECORE_FAILURE))
+            {
+              av->top = (mchunkptr) aligned_brk;
+              set_head (av->top, (snd_brk - aligned_brk + correction) | PREV_INUSE);
+              av->system_mem += correction;
+
+              /*
+                 If not the first time through, we either have a
+                 gap due to foreign sbrk or a non-contiguous region.  Insert a
+                 double fencepost at old_top to prevent consolidation with space
+                 we don't own. These fenceposts are artificial chunks that are
+                 marked as inuse and are in any case too small to use.  We need
+                 two to make sizes and alignments work out.
+               */
+
+              if (old_size != 0)
+              {
+                /*
+                   Shrink old_top to insert fenceposts, keeping size a
+                   multiple of MALLOC_ALIGNMENT. We know there is at least
+                   enough space in old_top to do this.
+                 */
+                old_size = (old_size - 4 * SIZE_SZ) & ~MALLOC_ALIGN_MASK;
+                set_head (old_top, old_size | PREV_INUSE);
+
+                /*
+                   Note that the following assignments completely overwrite
+                   old_top when old_size was previously MINSIZE.  This is
+                   intentional. We need the fencepost, even if old_top otherwise gets
+                   lost.
+                 */
+                chunk_at_offset (old_top, old_size)->size =
+                  (2 * SIZE_SZ) | PREV_INUSE;
+
+                chunk_at_offset (old_top, old_size + 2 * SIZE_SZ)->size =
+                  (2 * SIZE_SZ) | PREV_INUSE;
+
+                /* If possible, release the rest. */
+                if (old_size >= MINSIZE)
+                {
+                  _int_free (av, old_top, 1);
+                }
+              }
+            }
+          } // adjustment for non-contigous
+        }
+        mutex_unlock(&sbrk_lock);
+        reset_expand_op(EXPAND_SBRK);
+      } // end if (expand_op & EXPAND_SBRK != 0)
+      atomic_exchange_acq(&thread_running, 0);
+    } // end if (should_run == 2)
+    else if (should_run == 0)
+    {
+      usleep(SLEEP_TIME_US);
+      continue;
+    }
+  } // end while(1)
+  return 0;
+}
+
+
+
 /* ---------------- Error behavior ------------------------------------ */
 
 #ifndef DEFAULT_CHECK_ACTION
@@ -2934,7 +3252,11 @@ sysmalloc (INTERNAL_SIZE_T nb, mstate av)
     return 0;
 
   /* Record incoming configuration of top */
-
+  // Edit by Eddie
+  if (av == &main_arena)
+  {
+    mutex_lock(&sbrk_lock);
+  }
   old_top = av->top;
   old_size = chunksize (old_top);
   old_end = (char *) (chunk_at_offset (old_top, old_size));
@@ -3276,6 +3598,8 @@ sysmalloc (INTERNAL_SIZE_T nb, mstate av)
                 }
             }
         }
+        // Edit by Eddie
+        mutex_unlock(&sbrk_lock);
     } /* if (av !=  &main_arena) */
 
   if ((unsigned long) av->system_mem > (unsigned long) (av->max_system_mem))
@@ -3295,10 +3619,14 @@ sysmalloc (INTERNAL_SIZE_T nb, mstate av)
       set_head (p, nb | PREV_INUSE | (av != &main_arena ? NON_MAIN_ARENA : 0));
       set_head (remainder, remainder_size | PREV_INUSE);
       check_malloced_chunk (av, p, nb);
+      // Edit by Eddie
+      mutex_unlock(&av->mutex);
       return chunk2mem (p);
     }
 
   /* catch all failure paths */
+  // Edit by Eddie
+  mutex_unlock(&av->mutex);
   __set_errno (ENOMEM);
   return 0;
 }
