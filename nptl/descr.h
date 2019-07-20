@@ -103,7 +103,7 @@ struct xid_command
 
 
 /* Data structure used by the kernel to find robust futexes.  */
-struct robust_list_head
+struct g_robust_list_head
 {
   void *list;
   long int futex_offset;
@@ -173,7 +173,7 @@ struct pthread
   /* List of robust mutexes the thread is holding.  */
 #ifdef __PTHREAD_MUTEX_HAVE_PREV
   void *robust_prev;
-  struct robust_list_head robust_head;
+  struct g_robust_list_head robust_head;
 
   /* The list above is strange.  It is basically a double linked list
      but the pointer to the next/previous element of the list points
@@ -212,7 +212,7 @@ struct pthread
   union
   {
     __pthread_slist_t robust_list;
-    struct robust_list_head robust_head;
+    struct g_robust_list_head robust_head;
   };
 
 # define ENQUEUE_MUTEX_BOTH(mutex, val)					      \

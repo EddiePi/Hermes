@@ -280,7 +280,7 @@ START_THREAD_DEFN
       /* This call should never fail because the initial call in init.c
 	 succeeded.  */
       INTERNAL_SYSCALL (set_robust_list, err, 2, &pd->robust_head,
-			sizeof (struct robust_list_head));
+			sizeof (struct g_robust_list_head));
     }
 #endif
 
