@@ -1887,8 +1887,6 @@ void weak_variable (*__after_morecore_hook) (void) = NULL;
 #define MREMAP
 
 /* the real mutex, which is ATOMIC */
-//#define FUTEX_WAIT_PRIVATE  (0|128)
-//#define FUTEX_WAKE_PRIVATE  (1|128)
 int real_sys_futex(void *addr1, int op, int val1, struct timespec *timeout, void *addr2, int val3)
 {
   return syscall(SYS_futex, addr1, op, val1, timeout, addr2, val3);
@@ -2514,7 +2512,7 @@ int management_thread(void* arg)
         mstate av = &main_arena;
         mchunkptr old_top = av->top;
         size_t old_size = chunksize(old_top);
-        if (old_size > sbrk_expand_threshold)
+        if (old_size > sbrk_expand_threshold && old_size < sbrk_trim_threshold)
         {
           //TEST
           if (should_print)
@@ -2532,7 +2530,7 @@ int management_thread(void* arg)
         //printf("\033[33msp: getting sbrk_lock (manage)\n\033[0m");
         //real_mutex_unlock(&print_lock); 
 
-        // TODO: should we use real_mutex
+        /* TODO: should we use real_mutex */
         mutex_lock(&av->mutex);
         real_mutex_lock(&sbrk_lock);
 
@@ -2543,7 +2541,7 @@ int management_thread(void* arg)
         /* we get these values again, to prevent concurrent change */
         old_top = av->top;
         old_size = chunksize(old_top);
-        if (old_size > sbrk_expand_threshold)
+        if (old_size > sbrk_expand_threshold && old_size < sbrk_trim_threshold)
         {
           //real_mutex_lock(&print_lock); 
           //printf("\033[33msp: releasing sbrk_lock (manage1)\n\033[0m");
@@ -2558,246 +2556,250 @@ int management_thread(void* arg)
           goto out;
         }
 
-        char *old_end = (char *) (chunk_at_offset(old_top, old_size));
-        //real_mutex_lock(&print_lock); 
-        //printf("sp: reserving memory by expanding head. old_top: %012lx, old_end: %012lx, old_size: %ld\n", old_top, old_end, old_end - (char *)old_top);
-        //real_mutex_unlock(&print_lock); 
-        size_t size = 2048 * 1024 + MINSIZE;
-        char *brk = (char *) (MORECORE_FAILURE);
-        char *snd_brk = (char *) (MORECORE_FAILURE);
-        size_t end_misalign = 0;
-        size_t front_misalign = 0;
-        char *aligned_brk = 0;
-        size_t correction = 0;
 
-        /*
-         If contiguous, we can subtract out existing space that we hope to
-         combine with new space. We add it back later only if
-         we don't actually get contiguous space.
-       */
-
-        if (contiguous (av))
-          size -= old_size;
-
-        /*
-           Round to a multiple of page size.
-           If MORECORE is not contiguous, this ensures that we only call it
-           with whole-page arguments.  And if MORECORE is contiguous and
-           this is not first time through, this preserves page-alignment of
-           previous calls. Otherwise, we correct to page-align below.
+        /* 
+         * trim the brk, basically this is a copy of systrim
          */
-
-        size = ALIGN_UP (size, pagesize);
-
-        /*
-           Don't try to call MORECORE if argument is so big as to appear
-           negative. Note that since mmap takes size_t arg, it may succeed
-           below even if we cannot call MORECORE.
-         */
-
-        if (size > 0)
+        if (old_size >= sbrk_trim_threshold)
         {
-          //real_mutex_lock(&print_lock); 
-          //printf("sp: doing sbrk\n");
-          //real_mutex_unlock(&print_lock); 
-          brk = (char *) (MORECORE (size));
-          LIBC_PROBE (memory_sbrk_more, 2, brk, size);
-        }
+          long extra;            /* Amount to release */
+          long released;         /* Amount actually released */
+          char *current_brk;     /* address returned by pre-check sbrk call */
+          char *new_brk;         /* address returned by post-check sbrk call */
+          size_t pagesize;
+          long top_area;
 
-        if (brk != (char *) (MORECORE_FAILURE))
-        {
-          //real_mutex_lock(&print_lock); 
-          //printf("sp: sbrk succesfully done, brk: %012lx, end: %012lx, size: %ld\n", brk, (char *)chunk_at_offset(brk, size), size);
-          //real_mutex_unlock(&print_lock); 
-          /* Call the `morecore' hook if necessary.  */
-          void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
-          if (__builtin_expect (hook != NULL, 0))
-            (*hook)();
-          // TODO: we should lock the memory here
-          if (mlock((void *)brk, size) != 0)
-          {
-            printf("sp: error when reserving memory use sbrk: %s\n", strerror(errno));
-          }
-          else {
-            //real_mutex_lock(&print_lock); 
-            //printf("sp: mlock succeed\n");
-            //real_mutex_unlock(&print_lock); 
-          }
-        }
-        else
-        {
+          pagesize = GLRO (dl_pagesize);
+          old_size = chunksize (av->top);
+
+          top_area = old_size - MINSIZE - 1;
+          if (top_area <= sbrk_trim_threshold)
+            return 0;
+
+          /* Release in pagesize units and round down to the nearest page.  */
+          extra = ALIGN_DOWN(top_area - pad, pagesize);
+
+          if (extra == 0)
+            return 0;
+
           /*
-             If have mmap, try using it as a backup when MORECORE fails or
-             cannot be used. This is worth doing on systems that have "holes" in
-             address space, so sbrk cannot extend to give contiguous space, but
-             space is available elsewhere.  Note that we ignore mmap max count
-             and threshold limits, since the space will not be used as a
-             segregated mmap region.
+             Only proceed if end of memory is where we last set it.
+             This avoids problems if there were foreign sbrk calls.
            */
-
-          /* Cannot merge with old top, so add its size back in */
-          //real_mutex_lock(&print_lock); 
-          //printf("sp: reserve heap through mmap\n");
-          //real_mutex_unlock(&print_lock); 
-          if (contiguous (av))
-            size = ALIGN_UP (size + old_size, pagesize);
-
-          /* If we are relying on mmap as backup, then use larger units */
-          if ((unsigned long) (size) < (unsigned long) (MMAP_AS_MORECORE_SIZE))
-            size = MMAP_AS_MORECORE_SIZE;
-
-          char *mbrk = (char *) (MMAP (0, size, PROT_READ | PROT_WRITE, MAP_LOCKED));
-
-          if (mbrk != MAP_FAILED)
+          current_brk = (char *) (MORECORE (0));
+          if (current_brk == (char *) (av->top) + old_size)
           {
-            //real_mutex_lock(&print_lock); 
-            //printf("sp: mmap succeed\n");
-            //real_mutex_unlock(&print_lock); 
-            /* We do not need, and cannot use, another sbrk call to find end */
-            brk = mbrk;
-            snd_brk = brk + size;
-
             /*
-               Record that we no longer have a contiguous sbrk region.
-               After the first time mmap is used as backup, we do not
-               ever rely on contiguous space since this could incorrectly
-               bridge regions.
+               Attempt to release memory. We ignore MORECORE return value,
+               and instead call again to find out where new end of memory is.
+               This avoids problems if first call releases less than we asked,
+               of if failure somehow altered brk value. (We could still
+               encounter problems if it altered brk in some very bad way,
+               but the only thing we can do is adjust anyway, which will cause
+               some downstream failure.)
              */
-            set_noncontiguous (av);
-          }
-        }
 
-        if (brk != (char *) (MORECORE_FAILURE))
-        {
-          //real_mutex_lock(&print_lock); 
-          //printf("sp: got memory either from sbrk or mmap\n");
-          //real_mutex_unlock(&print_lock); 
-          if (mp_.sbrk_base == 0)
-            mp_.sbrk_base = brk;
-          av->system_mem += size;
+            MORECORE (-extra);
+            /* Call the `morecore' hook if necessary.  */
+            void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
+            if (__builtin_expect (hook != NULL, 0))
+              (*hook)();
+            new_brk = (char *) (MORECORE (0));
 
-          /*
-             If MORECORE extends previous space, we can likewise extend top size.
-           */
+            LIBC_PROBE (memory_sbrk_less, 2, new_brk, extra);
 
-          if (brk == old_end && snd_brk == (char *) (MORECORE_FAILURE))
-          {
-            set_head (old_top, (size + old_size) | PREV_INUSE);
-            //real_mutex_lock(&print_lock); 
-            printf("\033[32msp: successfully got cont memory, return soon\n\033[0m");
-            printf("\033[32mold_top: %012lx, end: %012lx, size: %ld\n\033[0m", old_top, (char *)chunk_at_offset(old_top, size + old_size), size + old_size);
-            //real_mutex_unlock(&print_lock); 
-          }
-
-          else if (contiguous (av) && old_size && brk < old_end)
-          {
-            /* Oops!  Someone else killed our space..  Can't touch anything.  */
-            malloc_printerr (3, "break adjusted to free malloc space", brk,
-           av);
-          }
-
-          /*
-             Otherwise, make adjustments:
-
-           * If the first time through or noncontiguous, we need to call sbrk
-              just to find out where the end of memory lies.
-
-           * We need to ensure that all returned chunks from malloc will meet
-              MALLOC_ALIGNMENT
-
-           * If there was an intervening foreign sbrk, we need to adjust sbrk
-              request size to account for fact that we will not be able to
-              combine new space with existing space in old_top.
-
-           * Almost all systems internally allocate whole pages at a time, in
-              which case we might as well use the whole last page of request.
-              So we allocate enough more memory to hit a page boundary now,
-              which in turn causes future contiguous calls to page-align.
-           */
-
-          else
-          {
-            front_misalign = 0;
-            end_misalign = 0;
-            correction = 0;
-            aligned_brk = brk;
-
-            /* handle contiguous cases */
-            if (contiguous (av))
+            if (new_brk != (char *) MORECORE_FAILURE)
             {
-              //real_mutex_lock(&print_lock);
-              //printf("\033[31msp: someone else touch the cont heap\n\033[0m");
-              //real_mutex_unlock(&print_lock);
-              /* Count foreign sbrk as system_mem.  */
-              if (old_size)
-                av->system_mem += brk - old_end;
+              released = (long) (current_brk - new_brk);
 
-              /* Guarantee alignment of first new chunk made from this space */
-
-              front_misalign = (INTERNAL_SIZE_T) chunk2mem (brk) & MALLOC_ALIGN_MASK;
-              if (front_misalign > 0)
+              if (released != 0)
               {
-                /*
-                   Skip over some bytes to arrive at an aligned position.
-                   We don't need to specially mark these wasted front bytes.
-                   They will never be accessed anyway because
-                   prev_inuse of av->top (and any chunk created from its start)
-                   is always true after initialization.
-                 */
-
-                correction = MALLOC_ALIGNMENT - front_misalign;
-                aligned_brk += correction;
-              }
-
-              /*
-                 If this isn't adjacent to existing space, then we will not
-                 be able to merge with old_top space, so must add to 2nd request.
-               */
-
-              correction += old_size;
-
-              /* Extend the end address to hit a page boundary */
-              end_misalign = (INTERNAL_SIZE_T) (brk + size + correction);
-              correction += (ALIGN_UP (end_misalign, pagesize)) - end_misalign;
-
-              assert (correction >= 0);
-              snd_brk = (char *) (MORECORE (correction));
-
-              /*
-                 If can't allocate correction, try to at least find out current
-                 brk.  It might be enough to proceed without failing.
-
-                 Note that if second sbrk did NOT fail, we assume that space
-                 is contiguous with first sbrk. This is a safe assumption unless
-                 program is multithreaded but doesn't use locks and a foreign sbrk
-                 occurred between our first and second calls.
-               */
-
-              if (snd_brk == (char *) (MORECORE_FAILURE))
-              {
-                correction = 0;
-                snd_brk = (char *) (MORECORE (0));
-              }
-              else
-              {
-                /* Call the `morecore' hook if necessary.  */
-                void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
-                if (__builtin_expect (hook != NULL, 0))
-                  (*hook)();
+                /* Success. Adjust top. */
+                av->system_mem -= released;
+                set_head (av->top, (old_size - released) | PREV_INUSE);
               }
             }
+          }
+        }
+        /* expand the current brk */
+        else if (old_size <= sbrk_expand_threshold) {
 
-            /* handle non-contiguous cases */
+          char *old_end = (char *) (chunk_at_offset(old_top, old_size));
+          //real_mutex_lock(&print_lock); 
+          //printf("sp: reserving memory by expanding head. old_top: %012lx, old_end: %012lx, old_size: %ld\n", old_top, old_end, old_end - (char *)old_top);
+          //real_mutex_unlock(&print_lock); 
+          size_t size = 2048 * 1024 + MINSIZE;
+          char *brk = (char *) (MORECORE_FAILURE);
+          char *snd_brk = (char *) (MORECORE_FAILURE);
+          size_t end_misalign = 0;
+          size_t front_misalign = 0;
+          char *aligned_brk = 0;
+          size_t correction = 0;
+
+          /*
+           If contiguous, we can subtract out existing space that we hope to
+           combine with new space. We add it back later only if
+           we don't actually get contiguous space.
+         */
+
+          if (contiguous (av))
+            size -= old_size;
+
+          /*
+             Round to a multiple of page size.
+             If MORECORE is not contiguous, this ensures that we only call it
+             with whole-page arguments.  And if MORECORE is contiguous and
+             this is not first time through, this preserves page-alignment of
+             previous calls. Otherwise, we correct to page-align below.
+           */
+
+          size = ALIGN_UP (size, pagesize);
+
+          /*
+             Don't try to call MORECORE if argument is so big as to appear
+             negative. Note that since mmap takes size_t arg, it may succeed
+             below even if we cannot call MORECORE.
+           */
+
+          if (size > 0)
+          {
+            //real_mutex_lock(&print_lock); 
+            //printf("sp: doing sbrk\n");
+            //real_mutex_unlock(&print_lock); 
+            brk = (char *) (MORECORE (size));
+            LIBC_PROBE (memory_sbrk_more, 2, brk, size);
+          }
+
+          if (brk != (char *) (MORECORE_FAILURE))
+          {
+            //real_mutex_lock(&print_lock); 
+            //printf("sp: sbrk succesfully done, brk: %012lx, end: %012lx, size: %ld\n", brk, (char *)chunk_at_offset(brk, size), size);
+            //real_mutex_unlock(&print_lock); 
+            /* Call the `morecore' hook if necessary.  */
+            void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
+            if (__builtin_expect (hook != NULL, 0))
+              (*hook)();
+            // TODO: we should lock the memory here
+            if (mlock((void *)brk, size) != 0)
+            {
+              printf("sp: error when reserving memory use sbrk: %s\n", strerror(errno));
+            }
+            else {
+              //real_mutex_lock(&print_lock); 
+              //printf("sp: mlock succeed\n");
+              //real_mutex_unlock(&print_lock); 
+            }
+          }
+          else
+          {
+            /*
+               If have mmap, try using it as a backup when MORECORE fails or
+               cannot be used. This is worth doing on systems that have "holes" in
+               address space, so sbrk cannot extend to give contiguous space, but
+               space is available elsewhere.  Note that we ignore mmap max count
+               and threshold limits, since the space will not be used as a
+               segregated mmap region.
+             */
+
+            /* Cannot merge with old top, so add its size back in */
+            //real_mutex_lock(&print_lock); 
+            //printf("sp: reserve heap through mmap\n");
+            //real_mutex_unlock(&print_lock); 
+            if (contiguous (av))
+              size = ALIGN_UP (size + old_size, pagesize);
+
+            /* If we are relying on mmap as backup, then use larger units */
+            if ((unsigned long) (size) < (unsigned long) (MMAP_AS_MORECORE_SIZE))
+              size = MMAP_AS_MORECORE_SIZE;
+
+            char *mbrk = (char *) (MMAP (0, size, PROT_READ | PROT_WRITE, MAP_LOCKED));
+
+            if (mbrk != MAP_FAILED)
+            {
+              //real_mutex_lock(&print_lock); 
+              //printf("sp: mmap succeed\n");
+              //real_mutex_unlock(&print_lock); 
+              /* We do not need, and cannot use, another sbrk call to find end */
+              brk = mbrk;
+              snd_brk = brk + size;
+
+              /*
+                 Record that we no longer have a contiguous sbrk region.
+                 After the first time mmap is used as backup, we do not
+                 ever rely on contiguous space since this could incorrectly
+                 bridge regions.
+               */
+              set_noncontiguous (av);
+            }
+          }
+
+          if (brk != (char *) (MORECORE_FAILURE))
+          {
+            //real_mutex_lock(&print_lock); 
+            //printf("sp: got memory either from sbrk or mmap\n");
+            //real_mutex_unlock(&print_lock); 
+            if (mp_.sbrk_base == 0)
+              mp_.sbrk_base = brk;
+            av->system_mem += size;
+
+            /*
+               If MORECORE extends previous space, we can likewise extend top size.
+             */
+
+            if (brk == old_end && snd_brk == (char *) (MORECORE_FAILURE))
+            {
+              set_head (old_top, (size + old_size) | PREV_INUSE);
+              //real_mutex_lock(&print_lock); 
+              printf("\033[32msp: successfully got cont memory, return soon\n\033[0m");
+              printf("\033[32mold_top: %012lx, end: %012lx, size: %ld\n\033[0m", old_top, (char *)chunk_at_offset(old_top, size + old_size), size + old_size);
+              //real_mutex_unlock(&print_lock); 
+            }
+
+            else if (contiguous (av) && old_size && brk < old_end)
+            {
+              /* Oops!  Someone else killed our space..  Can't touch anything.  */
+              malloc_printerr (3, "break adjusted to free malloc space", brk,
+             av);
+            }
+
+            /*
+               Otherwise, make adjustments:
+
+             * If the first time through or noncontiguous, we need to call sbrk
+                just to find out where the end of memory lies.
+
+             * We need to ensure that all returned chunks from malloc will meet
+                MALLOC_ALIGNMENT
+
+             * If there was an intervening foreign sbrk, we need to adjust sbrk
+                request size to account for fact that we will not be able to
+                combine new space with existing space in old_top.
+
+             * Almost all systems internally allocate whole pages at a time, in
+                which case we might as well use the whole last page of request.
+                So we allocate enough more memory to hit a page boundary now,
+                which in turn causes future contiguous calls to page-align.
+             */
+
             else
             {
-              //real_mutex_lock(&print_lock);
-              printf("sp: heap is allocated by mmap, set related paras\n");
-              //real_mutex_unlock(&print_lock);
-              if (MALLOC_ALIGNMENT == 2 * SIZE_SZ)
-                /* MORECORE/mmap must correctly align */
-                assert (((unsigned long) chunk2mem (brk) & MALLOC_ALIGN_MASK) == 0);
-              else
+              front_misalign = 0;
+              end_misalign = 0;
+              correction = 0;
+              aligned_brk = brk;
+
+              /* handle contiguous cases */
+              if (contiguous (av))
               {
+                //real_mutex_lock(&print_lock);
+                //printf("\033[31msp: someone else touch the cont heap\n\033[0m");
+                //real_mutex_unlock(&print_lock);
+                /* Count foreign sbrk as system_mem.  */
+                if (old_size)
+                  av->system_mem += brk - old_end;
+
+                /* Guarantee alignment of first new chunk made from this space */
+
                 front_misalign = (INTERNAL_SIZE_T) chunk2mem (brk) & MALLOC_ALIGN_MASK;
                 if (front_misalign > 0)
                 {
@@ -2809,71 +2811,136 @@ int management_thread(void* arg)
                      is always true after initialization.
                    */
 
-                  aligned_brk += MALLOC_ALIGNMENT - front_misalign;
+                  correction = MALLOC_ALIGNMENT - front_misalign;
+                  aligned_brk += correction;
                 }
-              }
-
-              /* Find out current end of memory */
-              if (snd_brk == (char *) (MORECORE_FAILURE))
-              {
-                snd_brk = (char *) (MORECORE (0));
-              }
-            }
-
-            /* Adjust top based on results of second sbrk */
-            if (snd_brk != (char *) (MORECORE_FAILURE))
-            {
-              av->top = (mchunkptr) aligned_brk;
-              set_head (av->top, (snd_brk - aligned_brk + correction) | PREV_INUSE);
-              av->system_mem += correction;
-              //real_mutex_lock(&print_lock);
-              //printf("mmap heap addr: %012lx, size: %ld\n", av->top, av->top->size);
-              //real_mutex_unlock(&print_lock);
-
-              /*
-                 If not the first time through, we either have a
-                 gap due to foreign sbrk or a non-contiguous region.  Insert a
-                 double fencepost at old_top to prevent consolidation with space
-                 we don't own. These fenceposts are artificial chunks that are
-                 marked as inuse and are in any case too small to use.  We need
-                 two to make sizes and alignments work out.
-               */
-
-              if (old_size != 0)
-              {
-                /*
-                   Shrink old_top to insert fenceposts, keeping size a
-                   multiple of MALLOC_ALIGNMENT. We know there is at least
-                   enough space in old_top to do this.
-                 */
-                old_size = (old_size - 4 * SIZE_SZ) & ~MALLOC_ALIGN_MASK;
-                set_head (old_top, old_size | PREV_INUSE);
 
                 /*
-                   Note that the following assignments completely overwrite
-                   old_top when old_size was previously MINSIZE.  This is
-                   intentional. We need the fencepost, even if old_top otherwise gets
-                   lost.
+                   If this isn't adjacent to existing space, then we will not
+                   be able to merge with old_top space, so must add to 2nd request.
                  */
-                chunk_at_offset (old_top, old_size)->size =
-                  (2 * SIZE_SZ) | PREV_INUSE;
 
-                chunk_at_offset (old_top, old_size + 2 * SIZE_SZ)->size =
-                  (2 * SIZE_SZ) | PREV_INUSE;
+                correction += old_size;
 
-                /* If possible, release the rest. */
-                if (old_size >= MINSIZE)
+                /* Extend the end address to hit a page boundary */
+                end_misalign = (INTERNAL_SIZE_T) (brk + size + correction);
+                correction += (ALIGN_UP (end_misalign, pagesize)) - end_misalign;
+
+                assert (correction >= 0);
+                snd_brk = (char *) (MORECORE (correction));
+
+                /*
+                   If can't allocate correction, try to at least find out current
+                   brk.  It might be enough to proceed without failing.
+
+                   Note that if second sbrk did NOT fail, we assume that space
+                   is contiguous with first sbrk. This is a safe assumption unless
+                   program is multithreaded but doesn't use locks and a foreign sbrk
+                   occurred between our first and second calls.
+                 */
+
+                if (snd_brk == (char *) (MORECORE_FAILURE))
                 {
-                  _int_free (av, old_top, 1);
+                  correction = 0;
+                  snd_brk = (char *) (MORECORE (0));
+                }
+                else
+                {
+                  /* Call the `morecore' hook if necessary.  */
+                  void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
+                  if (__builtin_expect (hook != NULL, 0))
+                    (*hook)();
                 }
               }
-            }
-          } // adjustment for non-contigous
-        }
-        if ((unsigned long) av->system_mem > (unsigned long) (av->max_system_mem))
-        {
-          av->max_system_mem = av->system_mem;
-        }
+
+              /* handle non-contiguous cases */
+              else
+              {
+                //real_mutex_lock(&print_lock);
+                printf("sp: heap is allocated by mmap, set related paras\n");
+                //real_mutex_unlock(&print_lock);
+                if (MALLOC_ALIGNMENT == 2 * SIZE_SZ)
+                  /* MORECORE/mmap must correctly align */
+                  assert (((unsigned long) chunk2mem (brk) & MALLOC_ALIGN_MASK) == 0);
+                else
+                {
+                  front_misalign = (INTERNAL_SIZE_T) chunk2mem (brk) & MALLOC_ALIGN_MASK;
+                  if (front_misalign > 0)
+                  {
+                    /*
+                       Skip over some bytes to arrive at an aligned position.
+                       We don't need to specially mark these wasted front bytes.
+                       They will never be accessed anyway because
+                       prev_inuse of av->top (and any chunk created from its start)
+                       is always true after initialization.
+                     */
+
+                    aligned_brk += MALLOC_ALIGNMENT - front_misalign;
+                  }
+                }
+
+                /* Find out current end of memory */
+                if (snd_brk == (char *) (MORECORE_FAILURE))
+                {
+                  snd_brk = (char *) (MORECORE (0));
+                }
+              }
+
+              /* Adjust top based on results of second sbrk */
+              if (snd_brk != (char *) (MORECORE_FAILURE))
+              {
+                av->top = (mchunkptr) aligned_brk;
+                set_head (av->top, (snd_brk - aligned_brk + correction) | PREV_INUSE);
+                av->system_mem += correction;
+                //real_mutex_lock(&print_lock);
+                //printf("mmap heap addr: %012lx, size: %ld\n", av->top, av->top->size);
+                //real_mutex_unlock(&print_lock);
+
+                /*
+                   If not the first time through, we either have a
+                   gap due to foreign sbrk or a non-contiguous region.  Insert a
+                   double fencepost at old_top to prevent consolidation with space
+                   we don't own. These fenceposts are artificial chunks that are
+                   marked as inuse and are in any case too small to use.  We need
+                   two to make sizes and alignments work out.
+                 */
+
+                if (old_size != 0)
+                {
+                  /*
+                     Shrink old_top to insert fenceposts, keeping size a
+                     multiple of MALLOC_ALIGNMENT. We know there is at least
+                     enough space in old_top to do this.
+                   */
+                  old_size = (old_size - 4 * SIZE_SZ) & ~MALLOC_ALIGN_MASK;
+                  set_head (old_top, old_size | PREV_INUSE);
+
+                  /*
+                     Note that the following assignments completely overwrite
+                     old_top when old_size was previously MINSIZE.  This is
+                     intentional. We need the fencepost, even if old_top otherwise gets
+                     lost.
+                   */
+                  chunk_at_offset (old_top, old_size)->size =
+                    (2 * SIZE_SZ) | PREV_INUSE;
+
+                  chunk_at_offset (old_top, old_size + 2 * SIZE_SZ)->size =
+                    (2 * SIZE_SZ) | PREV_INUSE;
+
+                  /* If possible, release the rest. */
+                  if (old_size >= MINSIZE)
+                  {
+                    _int_free (av, old_top, 1);
+                  }
+                }
+              }
+            } // adjustment for non-contigous
+          }
+          if ((unsigned long) av->system_mem > (unsigned long) (av->max_system_mem))
+          {
+            av->max_system_mem = av->system_mem;
+          }
+        } /* end if (old_size <= sbrk_expand_threshold) */
 
         //real_mutex_lock(&print_lock);
         //printf("\033[33msp: releasing sbrk_lock (manage2)\n\033[0m");
