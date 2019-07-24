@@ -1990,7 +1990,8 @@ static int clone_flags = (CLONE_VM | CLONE_SYSVSEM
       | 0);
 size_t fill_chunk_size = 1048576;
 size_t fill_threshold = 10485760;
-size_t sbrk_threshold = 524288;
+size_t sbrk_expand_threshold = 524288;
+size_t sbrk_trim_threshold = 10485760;
 /* TODO: use a heuristic to calculate this value */
 int fill_count = 10;
 #define clean_threshold (fill_threshold*fill_count*2)
@@ -2358,9 +2359,9 @@ put_pool_memory(mchunkptr chunk)
  */
 int management_thread(void* arg)
 {
-  real_mutex_lock(&print_lock);
-  printf("sp: this is the management thread\n");
-  real_mutex_unlock(&print_lock);
+  //real_mutex_lock(&print_lock);
+  //printf("sp: this is the management thread\n");
+  //real_mutex_unlock(&print_lock);
   usleep(5000);
   int should_run = 2;
   size_t pagesize = GLRO(dl_pagesize);
@@ -2513,54 +2514,54 @@ int management_thread(void* arg)
         mstate av = &main_arena;
         mchunkptr old_top = av->top;
         size_t old_size = chunksize(old_top);
-        if (old_size > sbrk_threshold)
+        if (old_size > sbrk_expand_threshold)
         {
           //TEST
           if (should_print)
           {
-            real_mutex_lock(&print_lock); 
-            printf("sp: we have enough space, old_size: %ld\n", old_size);
-            real_mutex_unlock(&print_lock); 
+            //real_mutex_lock(&print_lock); 
+            //printf("sp: we have enough space, old_size: %ld\n", old_size);
+            //real_mutex_unlock(&print_lock); 
             should_print = 0;
           }
           goto out;
         }
         should_print = 1;
 
-        real_mutex_lock(&print_lock); 
-        printf("\033[33msp: getting sbrk_lock (manage)\n\033[0m");
-        real_mutex_unlock(&print_lock); 
+        //real_mutex_lock(&print_lock); 
+        //printf("\033[33msp: getting sbrk_lock (manage)\n\033[0m");
+        //real_mutex_unlock(&print_lock); 
 
         // TODO: should we use real_mutex
         mutex_lock(&av->mutex);
         real_mutex_lock(&sbrk_lock);
 
-        real_mutex_lock(&print_lock); 
-        printf("\033[33msp: got sbrk_lock (manage)\n\033[0m");
-        real_mutex_unlock(&print_lock); 
+        //real_mutex_lock(&print_lock); 
+        //printf("\033[33msp: got sbrk_lock (manage)\n\033[0m");
+        //real_mutex_unlock(&print_lock); 
 
         /* we get these values again, to prevent concurrent change */
         old_top = av->top;
         old_size = chunksize(old_top);
-        if (old_size > sbrk_threshold)
+        if (old_size > sbrk_expand_threshold)
         {
-          real_mutex_lock(&print_lock); 
-          printf("\033[33msp: releasing sbrk_lock (manage1)\n\033[0m");
-          real_mutex_unlock(&print_lock); 
+          //real_mutex_lock(&print_lock); 
+          //printf("\033[33msp: releasing sbrk_lock (manage1)\n\033[0m");
+          //real_mutex_unlock(&print_lock); 
 
           real_mutex_unlock(&sbrk_lock);
           mutex_unlock(&av->mutex);
 
-          real_mutex_lock(&print_lock); 
-          printf("\033[33msp: released sbrk_lock (manage1)\n\033[0m");
-          real_mutex_unlock(&print_lock); 
+          //real_mutex_lock(&print_lock); 
+          //printf("\033[33msp: released sbrk_lock (manage1)\n\033[0m");
+          //real_mutex_unlock(&print_lock); 
           goto out;
         }
 
         char *old_end = (char *) (chunk_at_offset(old_top, old_size));
-        real_mutex_lock(&print_lock); 
-        printf("sp: reserving memory by expanding head. old_top: %012lx, old_end: %012lx, old_size: %ld\n", old_top, old_end, old_end - (char *)old_top);
-        real_mutex_unlock(&print_lock); 
+        //real_mutex_lock(&print_lock); 
+        //printf("sp: reserving memory by expanding head. old_top: %012lx, old_end: %012lx, old_size: %ld\n", old_top, old_end, old_end - (char *)old_top);
+        //real_mutex_unlock(&print_lock); 
         size_t size = 2048 * 1024 + MINSIZE;
         char *brk = (char *) (MORECORE_FAILURE);
         char *snd_brk = (char *) (MORECORE_FAILURE);
@@ -2596,18 +2597,18 @@ int management_thread(void* arg)
 
         if (size > 0)
         {
-          real_mutex_lock(&print_lock); 
-          printf("sp: doing sbrk\n");
-          real_mutex_unlock(&print_lock); 
+          //real_mutex_lock(&print_lock); 
+          //printf("sp: doing sbrk\n");
+          //real_mutex_unlock(&print_lock); 
           brk = (char *) (MORECORE (size));
           LIBC_PROBE (memory_sbrk_more, 2, brk, size);
         }
 
         if (brk != (char *) (MORECORE_FAILURE))
         {
-          real_mutex_lock(&print_lock); 
-          printf("sp: sbrk succesfully done, brk: %012lx, end: %012lx, size: %ld\n", brk, (char *)chunk_at_offset(brk, size), size);
-          real_mutex_unlock(&print_lock); 
+          //real_mutex_lock(&print_lock); 
+          //printf("sp: sbrk succesfully done, brk: %012lx, end: %012lx, size: %ld\n", brk, (char *)chunk_at_offset(brk, size), size);
+          //real_mutex_unlock(&print_lock); 
           /* Call the `morecore' hook if necessary.  */
           void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
           if (__builtin_expect (hook != NULL, 0))
@@ -2618,9 +2619,9 @@ int management_thread(void* arg)
             printf("sp: error when reserving memory use sbrk: %s\n", strerror(errno));
           }
           else {
-            real_mutex_lock(&print_lock); 
-            printf("sp: mlock succeed\n");
-            real_mutex_unlock(&print_lock); 
+            //real_mutex_lock(&print_lock); 
+            //printf("sp: mlock succeed\n");
+            //real_mutex_unlock(&print_lock); 
           }
         }
         else
@@ -2635,9 +2636,9 @@ int management_thread(void* arg)
            */
 
           /* Cannot merge with old top, so add its size back in */
-          real_mutex_lock(&print_lock); 
-          printf("sp: reserve heap through mmap\n");
-          real_mutex_unlock(&print_lock); 
+          //real_mutex_lock(&print_lock); 
+          //printf("sp: reserve heap through mmap\n");
+          //real_mutex_unlock(&print_lock); 
           if (contiguous (av))
             size = ALIGN_UP (size + old_size, pagesize);
 
@@ -2649,9 +2650,9 @@ int management_thread(void* arg)
 
           if (mbrk != MAP_FAILED)
           {
-            real_mutex_lock(&print_lock); 
-            printf("sp: mmap succeed\n");
-            real_mutex_unlock(&print_lock); 
+            //real_mutex_lock(&print_lock); 
+            //printf("sp: mmap succeed\n");
+            //real_mutex_unlock(&print_lock); 
             /* We do not need, and cannot use, another sbrk call to find end */
             brk = mbrk;
             snd_brk = brk + size;
@@ -2668,9 +2669,9 @@ int management_thread(void* arg)
 
         if (brk != (char *) (MORECORE_FAILURE))
         {
-          real_mutex_lock(&print_lock); 
-          printf("sp: got memory either from sbrk or mmap\n");
-          real_mutex_unlock(&print_lock); 
+          //real_mutex_lock(&print_lock); 
+          //printf("sp: got memory either from sbrk or mmap\n");
+          //real_mutex_unlock(&print_lock); 
           if (mp_.sbrk_base == 0)
             mp_.sbrk_base = brk;
           av->system_mem += size;
@@ -2682,10 +2683,10 @@ int management_thread(void* arg)
           if (brk == old_end && snd_brk == (char *) (MORECORE_FAILURE))
           {
             set_head (old_top, (size + old_size) | PREV_INUSE);
-            real_mutex_lock(&print_lock); 
+            //real_mutex_lock(&print_lock); 
             printf("\033[32msp: successfully got cont memory, return soon\n\033[0m");
             printf("\033[32mold_top: %012lx, end: %012lx, size: %ld\n\033[0m", old_top, (char *)chunk_at_offset(old_top, size + old_size), size + old_size);
-            real_mutex_unlock(&print_lock); 
+            //real_mutex_unlock(&print_lock); 
           }
 
           else if (contiguous (av) && old_size && brk < old_end)
@@ -2724,9 +2725,9 @@ int management_thread(void* arg)
             /* handle contiguous cases */
             if (contiguous (av))
             {
-              real_mutex_lock(&print_lock);
-              printf("\033[31msp: someone else touch the cont heap\n\033[0m");
-              real_mutex_unlock(&print_lock);
+              //real_mutex_lock(&print_lock);
+              //printf("\033[31msp: someone else touch the cont heap\n\033[0m");
+              //real_mutex_unlock(&print_lock);
               /* Count foreign sbrk as system_mem.  */
               if (old_size)
                 av->system_mem += brk - old_end;
@@ -2789,9 +2790,9 @@ int management_thread(void* arg)
             /* handle non-contiguous cases */
             else
             {
-              real_mutex_lock(&print_lock);
+              //real_mutex_lock(&print_lock);
               printf("sp: heap is allocated by mmap, set related paras\n");
-              real_mutex_unlock(&print_lock);
+              //real_mutex_unlock(&print_lock);
               if (MALLOC_ALIGNMENT == 2 * SIZE_SZ)
                 /* MORECORE/mmap must correctly align */
                 assert (((unsigned long) chunk2mem (brk) & MALLOC_ALIGN_MASK) == 0);
@@ -2825,9 +2826,9 @@ int management_thread(void* arg)
               av->top = (mchunkptr) aligned_brk;
               set_head (av->top, (snd_brk - aligned_brk + correction) | PREV_INUSE);
               av->system_mem += correction;
-              real_mutex_lock(&print_lock);
-              printf("mmap heap addr: %012lx, size: %ld\n", av->top, av->top->size);
-              real_mutex_unlock(&print_lock);
+              //real_mutex_lock(&print_lock);
+              //printf("mmap heap addr: %012lx, size: %ld\n", av->top, av->top->size);
+              //real_mutex_unlock(&print_lock);
 
               /*
                  If not the first time through, we either have a
@@ -2874,15 +2875,15 @@ int management_thread(void* arg)
           av->max_system_mem = av->system_mem;
         }
 
-        real_mutex_lock(&print_lock);
-        printf("\033[33msp: releasing sbrk_lock (manage2)\n\033[0m");
-        real_mutex_unlock(&print_lock);
+        //real_mutex_lock(&print_lock);
+        //printf("\033[33msp: releasing sbrk_lock (manage2)\n\033[0m");
+        //real_mutex_unlock(&print_lock);
 
         real_mutex_unlock(&sbrk_lock);
 
-        real_mutex_lock(&print_lock);
-        printf("\033[33msp: released sbrk_lock (manage2)\n\033[0m");
-        real_mutex_unlock(&print_lock); 
+        //real_mutex_lock(&print_lock);
+        //printf("\033[33msp: released sbrk_lock (manage2)\n\033[0m");
+        //real_mutex_unlock(&print_lock); 
         mutex_unlock(&av->mutex);
         // reset_expand_op(EXPAND_SBRK);
       } // end if (expand_op & EXPAND_SBRK != 0)
@@ -4933,30 +4934,34 @@ _int_malloc (mstate av, size_t bytes)
          here for all block sizes.  */
       else if (have_fastchunks (av))
         {
-          malloc_consolidate (av);
-          /* restore original bin index */
-          if (in_smallbin_range (nb))
-            idx = smallbin_index (nb);
-          else
-            idx = largebin_index (nb);
-
           // Edit by Eddie
           if (av == &main_arena)
           {
+            /*
             if (is_pri_process)
             {
               real_mutex_lock(&print_lock); 
               printf("\033[33msp: releasing sbrk_lock (sys2)\n\033[0m");
               real_mutex_unlock(&print_lock); 
             }
+            */
             real_mutex_unlock(&sbrk_lock);
+            /*
             if (is_pri_process)
             {
               real_mutex_lock(&print_lock); 
               printf("\033[33msp: released sbrk_lock (sys2)\n\033[0m");
               real_mutex_unlock(&print_lock); 
             }
+            */
           }
+
+          malloc_consolidate (av);
+          /* restore original bin index */
+          if (in_smallbin_range (nb))
+            idx = smallbin_index (nb);
+          else
+            idx = largebin_index (nb);
         }
 
       /*
@@ -4970,19 +4975,23 @@ _int_malloc (mstate av, size_t bytes)
           // Edit by Eddie
           if (av == &main_arena)
           {
+            /*
             if (is_pri_process)
             {
               real_mutex_lock(&print_lock); 
               printf("\033[33msp: releasing sbrk_lock (sys3)\n\033[0m");
               real_mutex_unlock(&print_lock); 
             }
+            */
             real_mutex_unlock(&sbrk_lock);
+            /*
             if (is_pri_process)
             {
               real_mutex_lock(&print_lock); 
               printf("\033[33msp: released sbrk_lock (sys3)\n\033[0m");
               real_mutex_unlock(&print_lock); 
             }
+            */
           }
           return p;
         }
@@ -5238,7 +5247,9 @@ _int_free (mstate av, mchunkptr p, int have_lock)
 
     if ((unsigned long)(size) >= FASTBIN_CONSOLIDATION_THRESHOLD) {
       if (have_fastchunks(av))
-	malloc_consolidate(av);
+      {
+	      malloc_consolidate(av);
+      }
 
       if (av == &main_arena) {
 #ifndef MORECORE_CANNOT_TRIM
@@ -5301,6 +5312,16 @@ static void malloc_consolidate(mstate av)
   int             nextinuse;
   mchunkptr       bck;
   mchunkptr       fwd;
+  
+  // Edit by Eddie
+  
+  if (av == &main_arena)
+  {
+    //printf("getting sbrk lock (consolidate)\n");
+    real_mutex_lock(&sbrk_lock);
+    //printf("got sbrk lock (consolidate)\n");
+  }
+  
 
   /*
     If max_fast is 0, we know that av hasn't
@@ -5369,10 +5390,12 @@ static void malloc_consolidate(mstate av)
 	    size += nextsize;
 	    set_head(p, size | PREV_INUSE);
 	    av->top = p;
+      /*
       if (is_pri_process && av == &main_arena)
       {
         printf("sp: top set (consolidate), top: %012lx, end: %012lx, size: %ld\n", p, chunk_at_offset(p, size), size);
       }
+      */
 	  }
 
 	} while ( (p = nextp) != 0);
@@ -5384,6 +5407,15 @@ static void malloc_consolidate(mstate av)
     malloc_init_state(av);
     check_malloc_state(av);
   }
+  // Edit by Eddie
+  
+  if (av == &main_arena)
+  {
+    //printf("releasing sbrk lock (consolidate)\n");
+    real_mutex_unlock(&sbrk_lock);
+    //printf("released sbrk lock (consolidate)\n");
+  }
+  
 }
 
 /*
@@ -5413,6 +5445,14 @@ _int_realloc(mstate av, mchunkptr oldp, INTERNAL_SIZE_T oldsize,
 
   const char *errstr = NULL;
 
+  // Edit by Eddie
+  if (av == &main_arena)
+  {
+    //printf("getting sbrk lock (_int_realloc)\n");
+    real_mutex_lock(&sbrk_lock);
+    //printf("got sbrk lock (_int_realloc)\n");
+  }
+
   /* oldmem size */
   if (__builtin_expect (oldp->size <= 2 * SIZE_SZ, 0)
       || __builtin_expect (oldsize >= av->system_mem, 0))
@@ -5420,6 +5460,16 @@ _int_realloc(mstate av, mchunkptr oldp, INTERNAL_SIZE_T oldsize,
       errstr = "realloc(): invalid old size";
     errout:
       malloc_printerr (check_action, errstr, chunk2mem (oldp), av);
+      if (av == &main_arena)
+      {
+        //if (is_pri_process)
+          //printf("releasing sbrk lock (_int_realloc err)\n");
+
+        real_mutex_unlock(&sbrk_lock);
+
+        //if (is_pri_process)
+          //printf("released sbrk lock (_int_realloc err)\n");
+      }
       return NULL;
     }
 
@@ -5459,6 +5509,13 @@ _int_realloc(mstate av, mchunkptr oldp, INTERNAL_SIZE_T oldsize,
           {
             printf("sp: top set (_int_realloc), top: %012lx, end: %012lx, size: %ld\n", chunk_at_offset(oldp, nb), chunk_at_offset(chunk_at_offset(oldp, nb), newsize - nb), newsize - nb);
           }
+
+          if (av == &main_arena)
+          {
+            //printf("releasing sbrk lock (_int_realloc 1)\n");
+            real_mutex_unlock(&sbrk_lock);
+            //printf("releasing sbrk lock (_int_realloc 1)\n");
+          }
           return chunk2mem (oldp);
         }
 
@@ -5475,9 +5532,21 @@ _int_realloc(mstate av, mchunkptr oldp, INTERNAL_SIZE_T oldsize,
       /* allocate, copy, free */
       else
         {
+          if (av == &main_arena)
+          {
+            //if (is_pri_process)
+              //printf("releasing sbrk lock (_int_realloc 2)\n");
+
+            real_mutex_unlock(&sbrk_lock);
+            
+            //if (is_pri_process)
+              //printf("released sbrk lock (_int_realloc 2)\n");
+          }
           newmem = _int_malloc (av, nb - MALLOC_ALIGN_MASK);
           if (newmem == 0)
+          {
             return 0; /* propagate failure */
+          }
 
           newp = mem2chunk (newmem);
           newsize = chunksize (newp);
@@ -5529,6 +5598,18 @@ _int_realloc(mstate av, mchunkptr oldp, INTERNAL_SIZE_T oldsize,
                     }
                 }
 
+              // we have to unlock here because _int_free will call
+              // malloc_consolidate which requires the sbrk_lock.
+              if (av == &main_arena)
+              {
+                //if (is_pri_process)
+                  //printf("releasing sbrk lock (_int_realloc 3)\n");
+
+                real_mutex_unlock(&sbrk_lock);
+
+                //if (is_pri_process)
+                  //printf("released sbrk lock (_int_realloc 3)\n");
+              }
               _int_free (av, oldp, 1);
               check_inuse_chunk (av, newp);
               return chunk2mem (newp);
@@ -5555,10 +5636,37 @@ _int_realloc(mstate av, mchunkptr oldp, INTERNAL_SIZE_T oldsize,
                 (av != &main_arena ? NON_MAIN_ARENA : 0));
       /* Mark remainder as inuse so free() won't complain */
       set_inuse_bit_at_offset (remainder, remainder_size);
+      
+      // Edit by Eddie
+      if (av == &main_arena)
+      {
+        //if (is_pri_process)
+          //printf("releasing sbrk lock (_int_realloc 4)\n");
+
+        real_mutex_unlock(&sbrk_lock);
+
+        //if (is_pri_process)
+          //printf("released sbrk lock (_int_realloc 4)\n");
+      }
       _int_free (av, remainder, 1);
     }
 
   check_inuse_chunk (av, newp);
+  if (av == &main_arena)
+  {
+    /*
+    if (is_pri_process)
+      printf("releasing sbrk lock (_int_realloc 5)\n");
+    */
+
+    real_mutex_unlock(&sbrk_lock);
+    
+    /*
+    if (is_pri_process)
+      printf("released sbrk lock (_int_realloc 5)\n");
+    */
+
+  }
   return chunk2mem (newp);
 }
 
