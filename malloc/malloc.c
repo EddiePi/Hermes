@@ -1986,8 +1986,9 @@ size_t fill_chunk_size = 1048576;
 size_t fill_threshold = 10485760;
 //size_t sbrk_expand_threshold = 1048576;
 size_t sbrk_expand_threshold = 2097152;
-//size_t sbrk_expand_threshold = 3145728;
+//size_t sbrk_expand_threshold = 5242880;
 size_t sbrk_expand_target = 4194304;
+//size_t sbrk_expand_target = 7340032;
 size_t sbrk_trim_threshold = 10485760;
 size_t sys_sbrk = 0;
 char * cur_sbrk_end = 0;
@@ -2367,11 +2368,13 @@ int management_thread(void* arg)
   //printf("sp: this is the management thread\n");
   //real_mutex_unlock(&print_lock);
   usleep(10);
+  mlockall(MCL_CURRENT);
   int should_run = 2;
   size_t pagesize = GLRO(dl_pagesize);
   int should_print = 1;
   size_t sbrk_size = 2048 * 1024 + MINSIZE;
   size_t prev_sbrk_size = sbrk_size;
+  struct timeval ts, te;
   mstate av = &main_arena;
   mlock((char *)(av->top), chunksize(av->top));
   while(1)
@@ -2589,6 +2592,7 @@ int management_thread(void* arg)
           top_area = old_size - MINSIZE - 1;
           if (top_area <= sbrk_trim_threshold)
             return 0;
+          printf("sp: sbrk trim branch\n");
 
           /* Release in pagesize units and round down to the nearest page.  */
           extra = ALIGN_DOWN(top_area - sbrk_expand_threshold, pagesize);
@@ -2680,10 +2684,12 @@ int management_thread(void* arg)
 
           char *old_end = (char *) (chunk_at_offset(old_top, old_size));
           //real_mutex_lock(&print_lock); 
-          //printf("sp: reserving memory by expanding head. old_top: %012lx, old_end: %012lx, old_size: %ld\n", old_top, old_end, old_end - (char *)old_top);
+          printf("sp: reserving memory by expanding head. old_top: %012lx, old_end: %012lx, old_size: %ld\n", old_top, old_end, old_size);
           //real_mutex_unlock(&print_lock); 
           //size_t size = sbrk_size + MINSIZE;
-          size_t size = 524288;
+          size_t size = 32768;
+          //size_t size = 524288;
+          //size_t size = 1048576;
           prev_sbrk_size = size;
           char *brk = (char *) (MORECORE_FAILURE);
           char *snd_brk = (char *) (MORECORE_FAILURE);
@@ -2718,20 +2724,22 @@ int management_thread(void* arg)
            */
 
           size_t expansion = 0;
-          size_t target = sbrk_expand_target + old_size - sbrk_expand_threshold;
+          //size_t target = sbrk_expand_target - ((char *)cur_sbrk_end - ((char *)av->top));
+          size_t target = 5242880;
+          gettimeofday(&ts, NULL);
           while (expansion < target)
           {
             //real_mutex_lock(&print_lock); 
             //printf("sp: doing sbrk\n");
             //real_mutex_unlock(&print_lock); 
             brk = (char *) (MORECORE (size));
-            cur_sbrk_end = (char *) (MORECORE(0));
             LIBC_PROBE (memory_sbrk_more, 2, brk, size);
             if (brk != (char *) (MORECORE_FAILURE))
             {
-              void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
-              if (__builtin_expect (hook != NULL, 0))
-                (*hook) ();
+              cur_sbrk_end = (char *)(brk + size);
+              //void (*hook) (void) = atomic_forced_read (__after_morecore_hook);
+              //if (__builtin_expect (hook != NULL, 0))
+                //(*hook) ();
               if (mlock((void *)brk, size) != 0)
               {
                 printf("sp: error when locking memory use sbrk: %s\n", strerror(errno));
@@ -2753,6 +2761,8 @@ int management_thread(void* arg)
               printf("\033[31msp: error when expanding head through sbrk\n\033[0m");
             }
           }
+          gettimeofday(&te, NULL);
+          printf("sp: expand time: %ld\n", (te.tv_sec - ts.tv_sec) * 1000000 + (te.tv_usec - ts.tv_usec));
 
             /*
           if (brk != (char *) (MORECORE_FAILURE))
@@ -5405,10 +5415,12 @@ _int_free (mstate av, mchunkptr p, int have_lock)
       set_head(p, size | PREV_INUSE);
       av->top = p;
       // Edie by Eddie
+      /*
       if (is_pri_process && av == &main_arena)
       {
         printf("sp: top set (_int_free), top: %012lx, end: %012lx, size: %ld\n", p, chunk_at_offset(p, size), size);
       }
+      */
       check_chunk(av, p);
       real_mutex_unlock(&top_lock);
     }
@@ -5686,10 +5698,12 @@ _int_realloc(mstate av, mchunkptr oldp, INTERNAL_SIZE_T oldsize,
           av->top = chunk_at_offset (oldp, nb);
           set_head (av->top, (newsize - nb) | PREV_INUSE);
           check_inuse_chunk (av, oldp);
+          /*
           if (is_pri_process && av == &main_arena)
           {
             printf("sp: top set (_int_realloc), top: %012lx, end: %012lx, size: %ld\n", chunk_at_offset(oldp, nb), chunk_at_offset(chunk_at_offset(oldp, nb), newsize - nb), newsize - nb);
           }
+          */
 
           if (av == &main_arena)
           {
