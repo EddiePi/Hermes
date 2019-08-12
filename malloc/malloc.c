@@ -1878,7 +1878,7 @@ void weak_variable (*__after_morecore_hook) (void) = NULL;
 /* this is 128kb */
 #define POOL_THRESHOLD 0x20000
 #define STACK_SIZE 2097152
-#define SLEEP_TIME_US 5
+#define SLEEP_TIME_US 10
 
 #define MREMAP
 
@@ -1987,9 +1987,11 @@ size_t fill_threshold = 10485760;
 //size_t sbrk_expand_threshold = 1048576;
 size_t sbrk_expand_threshold = 2097152;
 //size_t sbrk_expand_threshold = 5242880;
-size_t sbrk_expand_target = 4194304;
+//size_t sbrk_expand_target = 4194304;
 //size_t sbrk_expand_target = 7340032;
 size_t sbrk_trim_threshold = 10485760;
+size_t top_usage = 0;
+size_t small_req_count = 0;
 size_t sys_sbrk = 0;
 char * cur_sbrk_end = 0;
 
@@ -2373,9 +2375,9 @@ int management_thread(void* arg)
   size_t pagesize = GLRO(dl_pagesize);
   int should_print = 1;
   size_t sbrk_size = 2048 * 1024 + MINSIZE;
-  size_t prev_sbrk_size = sbrk_size;
   struct timeval ts, te;
   mstate av = &main_arena;
+  mchunkptr prev_top = av->top;
   mlock((char *)(av->top), chunksize(av->top));
   while(1)
   {
@@ -2522,13 +2524,13 @@ int management_thread(void* arg)
       /* expand memory by sbrk */
       if ((expand_op & EXPAND_SBRK) != 0)
       {
-        mchunkptr old_top = av->top;
+        mchunkptr cur_top = av->top;
         if (cur_sbrk_end == 0)
         {
           cur_sbrk_end = (char *)(MORECORE(0));
         }
-        size_t old_size = cur_sbrk_end - (char *)old_top;
-        if (old_size > sbrk_expand_threshold && old_size < sbrk_trim_threshold)
+        size_t cur_size = cur_sbrk_end - (char *)cur_top;
+        if (cur_size > sbrk_expand_threshold && cur_size < sbrk_trim_threshold)
         {
           //TEST
           if (should_print)
@@ -2549,16 +2551,17 @@ int management_thread(void* arg)
         /* TODO: should we use real_mutex */
         mutex_lock(&av->mutex);
         real_mutex_lock(&sbrk_lock);
+        cur_sbrk_end = (char *)(MORECORE(0));
 
         //real_mutex_lock(&print_lock); 
         //printf("\033[33msp: got sbrk_lock (manage)\n\033[0m");
         //real_mutex_unlock(&print_lock); 
 
         /* we get these values again, to prevent concurrent change */
-        old_top = av->top;
+        cur_top = av->top;
         //old_size = chunksize(old_top);
-        old_size = cur_sbrk_end - (char *)old_top;
-        if (old_size > sbrk_expand_threshold && old_size < sbrk_trim_threshold)
+        cur_size = cur_sbrk_end - (char *)cur_top;
+        if (cur_size > sbrk_expand_threshold && cur_size < sbrk_trim_threshold)
         {
           //real_mutex_lock(&print_lock); 
           //printf("\033[33msp: releasing sbrk_lock (manage1)\n\033[0m");
@@ -2573,11 +2576,25 @@ int management_thread(void* arg)
           goto out;
         }
 
+        // update the metrics and threshold here
+        size_t _top_usage = top_usage;
+        size_t _small_req_count = small_req_count;
+        atomic_exchange_acq(&top_usage, 0);
+        atomic_exchange_acq(&small_req_count, 0);
+        sbrk_expand_threshold = _top_usage / 2;
+        sbrk_trim_threshold = sbrk_expand_threshold * 3;
+        if (sbrk_trim_threshold < 5242880)
+        {
+          sbrk_trim_threshold = 5242880;
+        }
+
+        pirntf("sp: sbrk threshold update. exp_thr: %ld, trim_thr: %ld, top_usage: %ld, req_count: %ld\n", sbrk_expand_threshold, trim_threshold, _top_usage, _small_req_count);
+
 
         /* 
          * trim the brk, basically this is a copy of systrim
          */
-        if (old_size >= sbrk_trim_threshold)
+        if (cur_size >= sbrk_trim_threshold)
         {
           long extra;            /* Amount to release */
           char *current_brk;     /* address returned by pre-check sbrk call */
@@ -2587,9 +2604,9 @@ int management_thread(void* arg)
           long top_area;
 
           pagesize = GLRO (dl_pagesize);
-          old_size = chunksize (av->top);
+          cur_size = chunksize (av->top);
 
-          top_area = old_size - MINSIZE - 1;
+          top_area = cur_size - MINSIZE - 1;
           if (top_area <= sbrk_trim_threshold)
             return 0;
           printf("sp: sbrk trim branch\n");
@@ -2605,7 +2622,7 @@ int management_thread(void* arg)
              This avoids problems if there were foreign sbrk calls.
            */
           current_brk = (char *) (MORECORE (0));
-          if (current_brk == (char *) (av->top) + old_size)
+          if (current_brk == (char *) (av->top) + cur_size)
           {
             /*
                Attempt to release memory. We ignore MORECORE return value,
@@ -2635,41 +2652,39 @@ int management_thread(void* arg)
               {
                 /* Success. Adjust top. */
                 av->system_mem -= released;
-                set_head (av->top, (old_size - released) | PREV_INUSE);
+                set_head (av->top, (cur_size - released) | PREV_INUSE);
               }
             }
           }
         }
         /* expand the current brk */
-        else if (old_size <= sbrk_expand_threshold) {
+        else if (cur_size <= sbrk_expand_threshold) {
+          
+          size_t prev_used = 0;
 
           /* calculate the size to expand */
-          if (sys_sbrk > 0)
+          if (cur_top > prev_top)
           {
-            sbrk_size = sys_sbrk + prev_sbrk_size;
-            sys_sbrk = 0;
+            prev_used = (char *)cur_top - (char *)prev_top;
           }
-          else 
+          if (cur_size > prev_used)
           {
-            size_t prev_used = prev_sbrk_size - old_size;
-            if (old_size > prev_used)
+            if (cur_size > min_sbrk_size)
             {
-              if (old_size > min_sbrk_size)
-              {
-                // the current top have enough space for future allocation
-                real_mutex_unlock(&sbrk_lock);
-                mutex_unlock(&av->mutex);
-                goto out;
-              }
-              else
-              {
-                sbrk_size = min_sbrk_size;
-              }
+              // the current top have enough space for future allocation
+              real_mutex_unlock(&sbrk_lock);
+              mutex_unlock(&av->mutex);
+              goto out;
             }
             else
             {
-              sbrk_size = prev_used - old_size;
+              // this is the total size that should be expanded by sbrk, NOT the target address
+              sbrk_size = min_sbrk_size;
             }
+          }
+          else
+          {
+            sbrk_size = prev_used - cur_size;
           }
           if (sbrk_size < min_sbrk_size)
           {
@@ -2679,18 +2694,16 @@ int management_thread(void* arg)
           {
             sbrk_size = max_sbrk_size;
           }
+          prev_top = cur_top;
 
 
 
-          char *old_end = (char *) (chunk_at_offset(old_top, old_size));
+          char *cur_brk = (char *)(MORECORE(0));
           //real_mutex_lock(&print_lock); 
-          printf("sp: reserving memory by expanding head. old_top: %012lx, old_end: %012lx, old_size: %ld\n", old_top, old_end, old_size);
-          //real_mutex_unlock(&print_lock); 
-          //size_t size = sbrk_size + MINSIZE;
-          size_t size = 32768;
-          //size_t size = 524288;
-          //size_t size = 1048576;
-          prev_sbrk_size = size;
+          printf("sp: reserving memory by expanding head. cur_top: %012lx, cur_brk: %012lx, cur_size: %ld\n", cur_top, cur_brk, cur_size);
+          //real_mutex_unlock(&print_lock);
+          //size_t size = 32768;
+          size_t size = prev_used / _small_req_count;
           char *brk = (char *) (MORECORE_FAILURE);
           char *snd_brk = (char *) (MORECORE_FAILURE);
           size_t end_misalign = 0;
@@ -2725,7 +2738,8 @@ int management_thread(void* arg)
 
           size_t expansion = 0;
           //size_t target = sbrk_expand_target - ((char *)cur_sbrk_end - ((char *)av->top));
-          size_t target = 5242880;
+          //size_t target = 5242880;
+          size_t target = sbrk_size;
           gettimeofday(&ts, NULL);
           while (expansion < target)
           {
@@ -3062,7 +3076,7 @@ int management_thread(void* arg)
       //atomic_exchange_acq(&thread_running, 0);
     } // end if (should_run == 2)
 out:
-    //usleep(SLEEP_TIME_US);
+    usleep(SLEEP_TIME_US);
     continue;
   } // end while(1)
   return 0;
@@ -5078,6 +5092,11 @@ _int_malloc (mstate av, size_t bytes)
       // get the latest sbrk_end and top size
       victim = av->top;
       size = chunksize(victim);
+      if (is_pri_process && nb < mp_.mmap_threshold)
+      {
+        atomic_increment (&small_req_count);
+        atomic_exchange_and_add(&top_usage, &nb);
+      }
       if ((unsigned long) (size) < (unsigned long) (nb + MINSIZE) && av == &main_arena)
       {
         //real_mutex_lock(&top_lock);
