@@ -1989,7 +1989,8 @@ static int clone_flags = (CLONE_VM | CLONE_SYSVSEM
 size_t fill_chunk_size = 524288;
 size_t fill_threshold = 10485760;
 //size_t sbrk_expand_threshold = 1048576;
-size_t sbrk_expand_threshold = 2097152;
+//size_t sbrk_expand_threshold = 2097152;
+size_t sbrk_expand_threshold = 4194304;
 //size_t sbrk_expand_threshold = 5242880;
 //size_t sbrk_expand_target = 4194304;
 //size_t sbrk_expand_target = 7340032;
@@ -2011,7 +2012,7 @@ size_t pooled_memory = 0;
 unsigned long rsv_factor = 2;
 
 int thread_running = 0;
-int expand_op = 0x1;
+int expand_op = 0x2;
 static real_mutex_t expand_op_lock = _LIBC_LOCK_INITIALIZER;
 
 #define EXPAND_MMAP 0x1
